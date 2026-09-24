@@ -38,11 +38,10 @@ def mk_akos(byle: bytes, w: int = 2, h: int = 2, codec: int = 1,
     return chunk(b"LECF", loff + lflf)
 
 
-def test_byle_cel_pixels():
+def test_akos_cel_decoding_and_errors():
     # Column-major runs: col0 = colours 1,2; col1 = colours 3,3.
-    la1 = mk_akos(bytes([0x11, 0x21, 0x32]))
     errors: list = []
-    cels = list(A.iter_cels(b"", la1, errors))
+    cels = list(A.iter_cels(b"", mk_akos(bytes([0x11, 0x21, 0x32])), errors))
     assert errors == []
     assert len(cels) == 1
     cel = cels[0]
@@ -52,17 +51,12 @@ def test_byle_cel_pixels():
     assert cel.transparent == 0
     assert cel.index == bytes([1, 3, 2, 3])
 
-
-def test_unknown_codec_records_error():
-    la1 = mk_akos(bytes(4), codec=7)
-    errors: list = []
-    cels = list(A.iter_cels(b"", la1, errors))
+    errors = []
+    cels = list(A.iter_cels(b"", mk_akos(bytes(4), codec=7), errors))
     assert cels == []
     assert len(errors) == 1
     assert (errors[0].costume, errors[0].cel, errors[0].codec) == (1, 0, 7)
 
-
-def test_bad_container_raises():
     with pytest.raises(DecodeError):
         list(A.iter_cels(b"", b"NOPE" + be32(4) + bytes(4), []))
 

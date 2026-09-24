@@ -107,7 +107,7 @@ def assert_matches(frames: list[bytes], tmp_path: Path, name: str) -> None:
         assert pf.index == oidx, f"frame {i} index"
 
 
-def test_oracle_matches_single_variants(tmp_path):
+def test_oracle_matches_python(tmp_path):
     for name, frame in [
         ("v0", raw_frame(0x10)),
         ("v1", proc1_frame()),
@@ -118,21 +118,16 @@ def test_oracle_matches_single_variants(tmp_path):
     ]:
         assert_matches([frame], tmp_path, f"{name}.SAN")
 
-
-def test_oracle_matches_proc1_copy_from_other_buffer(tmp_path):
     body = bytes((i * 13 + 7) & 0xFF for i in range(FRAME))
     frames = [raw_body_frame(body, seq=0), proc1_copy_frame(seq=1)]
     assert_matches(frames, tmp_path, "copy.SAN")
-
     path = tmp_path / "copy2.SAN"
     path.write_bytes(fx.san([fx.frame(f) for f in frames], PAL))
     out = list(S.iter_frames(path.read_bytes(), "copy2.SAN"))
     assert out[0].index == body
-    assert out[1].index == body          # frame 1 is an exact copy of frame 0
+    assert out[1].index == body                          # frame 1 copies frame 0
 
-
-def test_oracle_matches_stateful_multi_frame(tmp_path):
-    frames = [
+    multi = [
         proc3_fdfe_frame(seq=0),
         proc3_fdfe_frame(seq=1),
         proc1_frame(seq=2),
@@ -140,4 +135,4 @@ def test_oracle_matches_stateful_multi_frame(tmp_path):
         raw_frame(0x44, seq=4),
         proc4_fdfe_frame(seq=5),
     ]
-    assert_matches(frames, tmp_path, "multi.SAN")
+    assert_matches(multi, tmp_path, "multi.SAN")

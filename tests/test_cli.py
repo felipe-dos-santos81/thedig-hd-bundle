@@ -116,88 +116,63 @@ def read_manifest(out: Path) -> dict:
     return json.loads((out / "manifest.json").read_text())
 
 
-def test_extract_success_manifest_ids_and_paths(tmp_path):
-    app = default_app(tmp_path)
+def test_extract_success_manifest_and_sidecars(tmp_path):
     out = tmp_path / "out"
+    app = default_app(tmp_path / "bundle")
 
     assert main(["extract", "--game", str(app), "--out", str(out), "--jobs", "1"]) == 0
 
     doc = read_manifest(out)
     ids = [a["id"] for a in doc["assets"]]
-    assert "san:sq1:00000" in ids
-    assert "san:sq1:00001" in ids
-    assert "nut:font0:00000" in ids
+    assert {"san:sq1:00000", "san:sq1:00001", "nut:font0:00000"} <= set(ids)
     assert len(ids) == len(set(ids)), "manifest ids must be unique"
-
-    assert doc["counts"]["san_frames"] == 2
-    assert doc["counts"]["nut_images"] == 1
-    assert doc["counts"]["la1_bitmaps"] == 0
-    assert doc["counts"]["errors"] == 0
+    assert doc["counts"] == {
+        "san_frames": 2, "nut_images": 1, "la1_bitmaps": 0, "errors": 0,
+    }
 
     for asset in doc["assets"]:
         assert (out / asset["path"]).exists(), asset["path"]
     assert not (out / "_errors.json").exists()
 
-
-def test_extract_writes_palette_sidecars(tmp_path):
-    app = default_app(tmp_path)
-    out = tmp_path / "out"
-    assert main(["extract", "--game", str(app), "--out", str(out), "--jobs", "1"]) == 0
-
-    doc = read_manifest(out)
-    palettes = {a["palette"] for a in doc["assets"]}
-    for h in palettes:
+    for h in {a["palette"] for a in doc["assets"]}:
         assert (out / "palettes" / f"{h}.json").exists()
         assert (out / "palettes" / f"{h}.png").exists()
 
 
-def test_missing_bundle_exit_2_mentions_video(tmp_path, capsys):
+def test_extract_errors_and_preflight(tmp_path, capsys):
+    # missing bundle -> exit 2, message names VIDEO
     rc = main(["extract", "--game", str(tmp_path / "nope"), "--out",
                str(tmp_path / "out"), "--jobs", "1"])
-    assert rc == 2
-    assert "VIDEO" in capsys.readouterr().err
+    assert rc == 2 and "VIDEO" in capsys.readouterr().err
 
-
-def test_truncated_san_records_error_and_exit_1(tmp_path):
+    # truncated SAN -> exit 1 with an _errors.json entry
     good = fx.san([fx.frame(), fx.frame()], palette=PAL)
-    app = make_app(tmp_path, san=good[:20],  # cut inside the AHDR chunk
-                   nut=fx.mk_nut([(1, 4, 2, codec1_payload())], PAL),
-                   la1=empty_la1())
+    app = make_app(tmp_path / "truncated", san=good[:20],  # cut inside the AHDR chunk
+                   nut=fx.mk_nut([(1, 4, 2, codec1_payload())], PAL), la1=empty_la1())
     out = tmp_path / "out"
-
     assert main(["extract", "--game", str(app), "--out", str(out), "--jobs", "1"]) == 1
-
     doc = json.loads((out / "_errors.json").read_text())
-    assert doc["count"] >= 1
-    assert doc["errors"][0]["source"] == "VIDEO/SQ1.SAN"
+    assert doc["count"] >= 1 and doc["errors"][0]["source"] == "VIDEO/SQ1.SAN"
+
+    # invalid --only -> exit 2 naming the bad kind
+    app = default_app(tmp_path / "bundle")
+    rc = main(["extract", "--game", str(app), "--out", str(tmp_path / "out2"),
+               "--only", "bogus", "--jobs", "1"])
+    assert rc == 2 and "bogus" in capsys.readouterr().err
 
 
-def test_only_limits_extraction(tmp_path):
-    app = default_app(tmp_path)
+def test_extract_only_and_determinism(tmp_path):
+    app = default_app(tmp_path / "bundle")
     out = tmp_path / "out"
     assert main(["extract", "--game", str(app), "--out", str(out),
                  "--only", "san", "--jobs", "1"]) == 0
-
     doc = read_manifest(out)
-    assert doc["counts"]["san_frames"] == 2
-    assert doc["counts"]["nut_images"] == 0
+    assert doc["counts"]["san_frames"] == 2 and doc["counts"]["nut_images"] == 0
     assert not (out / "nut").exists()
 
-
-def test_invalid_only_exit_2(tmp_path, capsys):
-    app = default_app(tmp_path)
-    rc = main(["extract", "--game", str(app), "--out", str(tmp_path / "out"),
-               "--only", "bogus", "--jobs", "1"])
-    assert rc == 2
-    assert "bogus" in capsys.readouterr().err
-
-
-def test_extract_is_deterministic(tmp_path):
-    app = default_app(tmp_path)
     a, b = tmp_path / "a", tmp_path / "b"
     assert main(["extract", "--game", str(app), "--out", str(a), "--jobs", "1"]) == 0
     assert main(["extract", "--game", str(app), "--out", str(b), "--jobs", "1"]) == 0
-
     da, db = read_manifest(a), read_manifest(b)
     assert da["assets"] == db["assets"]
     assert da["counts"] == db["counts"]
@@ -205,65 +180,46 @@ def test_extract_is_deterministic(tmp_path):
     assert (a / "san/SQ1/00000.png").read_bytes() == (b / "san/SQ1/00000.png").read_bytes()
 
 
-def test_obim_bomp_sprite_is_rgba_with_alpha(tmp_path):
-    app = make_app(tmp_path, san=b"", nut=b"", la1=obim_bomp_la1())
-    out = tmp_path / "out"
+def test_extract_transparency_and_stale_errors(tmp_path):
+    # BOMP OBIM: transparent index 255 -> RGBA with alpha 0
+    app = make_app(tmp_path / "bomp", san=b"", nut=b"", la1=obim_bomp_la1())
+    out = tmp_path / "out_bomp"
     assert main(["extract", "--game", str(app), "--out", str(out),
                  "--only", "la1", "--jobs", "1"]) == 0
-
-    doc = read_manifest(out)
-    assert [a["id"] for a in doc["assets"]] == ["la1:obj063_01"]
-    asset = doc["assets"][0]
-    assert asset["has_alpha"] is True
-
+    asset = read_manifest(out)["assets"][0]
+    assert asset["id"] == "la1:obj063_01" and asset["has_alpha"] is True
     im = Image.open(out / asset["path"])
-    assert im.mode == "RGBA"
-    assert im.size == (2, 2)
-    assert im.getpixel((0, 0))[3] == 0        # index 255 -> transparent
-    assert im.getpixel((1, 1))[3] == 0
-    assert im.getpixel((1, 0))[3] == 255      # non-transparent pixels keep alpha
+    assert im.mode == "RGBA" and im.size == (2, 2)
+    assert im.getpixel((0, 0))[3] == 0 and im.getpixel((1, 1))[3] == 0
+    assert im.getpixel((1, 0))[3] == 255
     assert im.getpixel((1, 0))[:3] == tuple(PAL[5 * 3:5 * 3 + 3])
     assert im.getpixel((0, 1))[:3] == tuple(PAL[6 * 3:6 * 3 + 3])
 
-
-def test_obim_smap_non_transparent_stays_opaque(tmp_path):
-    app = make_app(tmp_path, san=b"", nut=b"", la1=obim_smap_la1())
-    out = tmp_path / "out"
+    # non-transparent SMAP OBIM stays opaque RGB
+    app = make_app(tmp_path / "smap", san=b"", nut=b"", la1=obim_smap_la1())
+    out = tmp_path / "out_smap"
     assert main(["extract", "--game", str(app), "--out", str(out),
                  "--only", "la1", "--jobs", "1"]) == 0
-
-    doc = read_manifest(out)
-    assert [a["id"] for a in doc["assets"]] == ["la1:obj063_01"]
-    asset = doc["assets"][0]
-    assert asset["has_alpha"] is False
+    asset = read_manifest(out)["assets"][0]
+    assert asset["id"] == "la1:obj063_01" and asset["has_alpha"] is False
     assert Image.open(out / asset["path"]).mode == "RGB"
 
-
-def test_akos_cdat_cel_255_is_rgba_with_alpha(tmp_path):
-    app = make_app(tmp_path, san=b"", nut=b"", la1=akos_cdat_la1())
-    out = tmp_path / "out"
+    # AKOS CDAT cel: index 255 normalized to alpha 0
+    app = make_app(tmp_path / "akos", san=b"", nut=b"", la1=akos_cdat_la1())
+    out = tmp_path / "out_akos"
     assert main(["extract", "--game", str(app), "--out", str(out),
                  "--only", "akos", "--jobs", "1"]) == 0
-
-    doc = read_manifest(out)
-    assert [a["id"] for a in doc["assets"]] == ["akos:costume001_000"]
-    asset = doc["assets"][0]
-    assert asset["has_alpha"] is True
-
+    asset = read_manifest(out)["assets"][0]
+    assert asset["id"] == "akos:costume001_000" and asset["has_alpha"] is True
     im = Image.open(out / asset["path"])
-    assert im.mode == "RGBA"
-    assert im.size == (2, 2)
-    assert im.getpixel((0, 0))[3] == 0        # index 255 -> normalized alpha 0
-    assert im.getpixel((1, 1))[3] == 0
-    assert im.getpixel((1, 0))[3] == 255
-    assert im.getpixel((0, 1))[3] == 255
+    assert im.mode == "RGBA" and im.size == (2, 2)
+    assert im.getpixel((0, 0))[3] == 0 and im.getpixel((1, 1))[3] == 0
+    assert im.getpixel((1, 0))[3] == 255 and im.getpixel((0, 1))[3] == 255
 
-
-def test_stale_errors_file_is_removed_on_clean_run(tmp_path):
-    app = default_app(tmp_path)
-    out = tmp_path / "out"
+    # a stale _errors.json is removed by a clean run
+    app = default_app(tmp_path / "clean")
+    out = tmp_path / "out_clean"
     out.mkdir()
     (out / "_errors.json").write_text('{"count": 1, "errors": []}')
-
     assert main(["extract", "--game", str(app), "--out", str(out), "--jobs", "1"]) == 0
     assert not (out / "_errors.json").exists()

@@ -44,10 +44,14 @@ def mk_la1(pal: bytes = PAL, w: int = 8, h: int = 2, codec: int = 1,
     return chunk(b"LECF", loff + lflf)
 
 
-def test_raw256_room_bitmap_pixels_and_palette():
-    la1 = mk_la1()
+def _wrap_room(room_body: bytes) -> bytes:
+    loff = chunk(b"LOFF", bytes([1, 1]) + le32(30))
+    return chunk(b"LECF", loff + chunk(b"LFLF", room_body))
+
+
+def test_la1_room_and_object_bitmaps():
     errors: list = []
-    bitmaps = list(L.iter_bitmaps(b"", la1, errors))
+    bitmaps = list(L.iter_bitmaps(b"", mk_la1(), errors))
     assert errors == []
     assert len(bitmaps) == 1
     bmp = bitmaps[0]
@@ -55,48 +59,24 @@ def test_raw256_room_bitmap_pixels_and_palette():
     assert (bmp.width, bmp.height) == (8, 2)
     assert bmp.palette == PAL
     assert bmp.index == bytes(range(1, 17))
-    assert bmp.transparent0 is False
+    assert bmp.transparent0 is False                    # RAW256 is opaque
 
-
-def test_transparent0_is_or_of_strip_flags():
-    # Two strips: RAW256 (opaque) then ZIGZAG_VT6 (transparent) -> OR is True.
+    # two strips: RAW256 (opaque) then ZIGZAG_VT6 (transparent) -> OR is True
     w = 16
-    vt_strip = bytes([5, 0, 0, 0, 0, 0, 0, 0])
-    raw_strip = bytes(range(1, 9))
     numstrips = w // 8
     off0 = 8 + 4 * numstrips
-    strip0 = bytes([1]) + raw_strip
+    strip0 = bytes([1]) + bytes(range(1, 9))
     off1 = off0 + len(strip0)
-    payload = le32(off0) + le32(off1) + strip0 + bytes([36]) + vt_strip
-    smap = chunk(b"SMAP", payload)
-    im00 = chunk(b"IM00", smap)
-    rmim = chunk(b"RMIM", chunk(b"RMIH", bytes(4)) + im00)
+    payload = le32(off0) + le32(off1) + strip0 + bytes([36]) + bytes([5, 0, 0, 0, 0, 0, 0, 0])
+    rmim = chunk(b"RMIM", chunk(b"RMIH", bytes(4)) + chunk(b"IM00", chunk(b"SMAP", payload)))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, 1, 0))
     wrap = chunk(b"WRAP", chunk(b"OFFS", le32(12)) + chunk(b"APAL", PAL))
-    room_body = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + rmim)
-    lflf = chunk(b"LFLF", room_body)
-    loff = chunk(b"LOFF", bytes([1, 1]) + le32(30))
-    la1 = chunk(b"LECF", loff + lflf)
-
-    errors: list = []
-    bitmaps = list(L.iter_bitmaps(b"", la1, errors))
+    errors = []
+    bitmaps = list(L.iter_bitmaps(b"", _wrap_room(chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + rmim)), errors))
     assert errors == []
     assert bitmaps[0].transparent0 is True
 
-
-def test_unsupported_codec_records_error_and_skips_bitmap():
-    # NMAJMIN_H4 (134) maps to the untranscribed drawStripHE -> LA1E.
-    la1 = mk_la1(codec=134, strip=bytes(64))
-    errors: list = []
-    bitmaps = list(L.iter_bitmaps(b"", la1, errors))
-    assert bitmaps == []
-    assert len(errors) == 1
-    # Offset of the IM00 chunk; the oracle emits LA1E at the same offset.
-    assert errors[0].offset == 880
-    assert errors[0].reason == "unsupported SMAP codec"
-
-
-def test_obim_bomp_bitmap_pixels_and_name():
+    # one room with a single 8x1 OBIM BOMP object sprite -> name obj063_01
     w, h = 8, 1
     bomp_data = bytes([(w - 1) << 1]) + bytes(range(1, w + 1))  # literal run of 8
     row = struct.pack("<H", len(bomp_data)) + bomp_data
@@ -104,14 +84,8 @@ def test_obim_bomp_bitmap_pixels_and_name():
     imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, w, h))
     obim = chunk(b"OBIM", imhd + chunk(b"IM01", bomp))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, h, 0))
-    wrap = chunk(b"WRAP", chunk(b"OFFS", le32(12)) + chunk(b"APAL", PAL))
-    room_body = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)
-    lflf = chunk(b"LFLF", room_body)
-    loff = chunk(b"LOFF", bytes([1, 1]) + le32(30))
-    la1 = chunk(b"LECF", loff + lflf)
-
-    errors: list = []
-    bitmaps = list(L.iter_bitmaps(b"", la1, errors))
+    errors = []
+    bitmaps = list(L.iter_bitmaps(b"", _wrap_room(chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)), errors))
     assert errors == []
     assert len(bitmaps) == 1
     assert bitmaps[0].name == "obj063_01"
@@ -119,7 +93,15 @@ def test_obim_bomp_bitmap_pixels_and_name():
     assert bitmaps[0].transparent0 is False
 
 
-def test_bad_container_raises():
+def test_la1_errors():
+    # NMAJMIN_H4 (134) maps to the untranscribed drawStripHE -> LA1E.
+    errors: list = []
+    bitmaps = list(L.iter_bitmaps(b"", mk_la1(codec=134, strip=bytes(64)), errors))
+    assert bitmaps == []
+    assert len(errors) == 1
+    assert errors[0].offset == 880                      # offset of the IM00 chunk
+    assert errors[0].reason == "unsupported SMAP codec"
+
     with pytest.raises(DecodeError):
         list(L.iter_bitmaps(b"", b"NOPE" + be32(4) + bytes(4), []))
 

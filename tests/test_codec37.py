@@ -25,115 +25,70 @@ def fobj(codec: int, w: int, h: int, data: bytes, left: int = 0, top: int = 0,
     return fx.be(b"FOBJ", hdr + data)
 
 
-# --- DeltaBlocksDecoder unit tests -------------------------------------------------
-
-def test_case0_raw_copy():
+def test_delta_blocks_decoder_variants():
     d = DeltaBlocksDecoder(W, H)
-    body = bytes(range(256)) * 250                    # 64000 bytes
-    src = codec_header(0, 0, 0, FRAME, 0) + body
+
+    body = bytes(range(256)) * 250                     # 64000 bytes
     dst = bytearray(FRAME)
-    d.decode(dst, src)
-    assert bytes(dst) == body
+    d.decode(dst, codec_header(0, 0, 0, FRAME, 0) + body)
+    assert bytes(dst) == body                          # variant 0: raw copy
 
-
-def test_case0_short_copy_tail_zeroed():
-    d = DeltaBlocksDecoder(W, H)
-    src = codec_header(0, 0, 0, 4, 0) + b"\xAA\xBB\xCC\xDD"
     dst = bytearray(b"\x55" * FRAME)
-    d.decode(dst, src)
-    assert bytes(dst[:4]) == b"\xAA\xBB\xCC\xDD"
-    assert bytes(dst[4:]) == bytes(FRAME - 4)
+    d.decode(dst, codec_header(0, 0, 0, 4, 0) + b"\xAA\xBB\xCC\xDD")
+    assert bytes(dst[:4]) == b"\xAA\xBB\xCC\xDD" and bytes(dst[4:]) == bytes(FRAME - 4)
 
-
-def test_case2_bomp_small():
-    d = DeltaBlocksDecoder(W, H)
-    src = codec_header(2, 0, 0, 8, 0) + bytes([0b0000_1111, 0x77])
     dst = bytearray(FRAME)
-    d.decode(dst, src)
-    assert bytes(dst[:8]) == bytes([0x77]) * 8
-    assert bytes(dst[8:]) == bytes(FRAME - 8)
+    d.decode(dst, codec_header(2, 0, 0, 8, 0) + bytes([0b0000_1111, 0x77]))
+    assert bytes(dst[:8]) == bytes([0x77]) * 8 and bytes(dst[8:]) == bytes(FRAME - 8)
 
-
-def test_case2_bomp_full_frame():
-    d = DeltaBlocksDecoder(W, H)
-    line = bytes([0xFF, 0x33]) * 500                  # 500 RLE runs of 128 == 64000
-    src = codec_header(2, 0, 0, FRAME, 0) + line
+    line = bytes([0xFF, 0x33]) * 500                   # 500 RLE runs of 128 == 64000
     dst = bytearray(FRAME)
-    d.decode(dst, src)
-    assert bytes(dst) == bytes([0x33]) * FRAME
+    d.decode(dst, codec_header(2, 0, 0, FRAME, 0) + line)
+    assert bytes(dst) == bytes([0x33]) * FRAME         # variant 2: BOMP rows
 
-
-def test_case3_fdfe_literal_4x4_fills():
-    d = DeltaBlocksDecoder(W, H)
-    # mask bit 2 selects the WithFDFE proc; 0xFD = literal 4x4, one byte per block.
     blocks = 80 * 50
     stream = b"".join(bytes([0xFD, i & 0xFF]) for i in range(blocks))
-    src = codec_header(3, 0, 0, len(stream), 4) + stream
     dst = bytearray(FRAME)
-    d.decode(dst, src)
-    # every 4x4 block is a solid color of (i & 0xFF)
+    d.decode(dst, codec_header(3, 0, 0, len(stream), 4) + stream)
     assert dst[0] == 0 and dst[3] == 0 and dst[320 * 3 + 3] == 0
     assert dst[4] == 1 and dst[320 * 3 + 7] == 1
-    assert bytes(dst) != bytes(FRAME)
+    assert bytes(dst) != bytes(FRAME)                  # variant 3: FDFE literal 4x4
 
-
-def test_case4_fdfe_literal_4x4_fills():
-    d = DeltaBlocksDecoder(W, H)
-    blocks = 80 * 50
-    stream = b"".join(bytes([0xFD, i & 0xFF]) for i in range(blocks))
-    src = codec_header(4, 0, 0, len(stream), 4) + stream
     dst = bytearray(FRAME)
-    d.decode(dst, src)
+    d.decode(dst, codec_header(4, 0, 0, len(stream), 4) + stream)
     assert dst[0] == 0 and dst[4] == 1 and dst[7] == 1 and dst[320 * 3 + 7] == 1
 
-
-def test_instances_are_independent():
     a = DeltaBlocksDecoder(W, H)
     b = DeltaBlocksDecoder(W, H)
     a.decode(bytearray(FRAME), codec_header(0, 0, 0, FRAME, 0) + bytes([0x11]) * FRAME)
     dst = bytearray(FRAME)
     b.decode(dst, codec_header(0, 0, 0, FRAME, 0) + bytes([0x22]) * FRAME)
-    assert bytes(dst) == bytes([0x22]) * FRAME
+    assert bytes(dst) == bytes([0x22]) * FRAME         # instances are independent
 
-
-# --- SanReader integration: guards + codec dispatch ---------------------------------
 
 def _read_one(*subs, palette: bytes = bytes(768)):
     r = S.SanReader(fx.san([fx.frame(*subs)], palette), "synthetic")
-    frames = list(r.frames())
-    return r, frames
+    return r, list(r.frames())
 
 
-def test_fobj_skip_small_counts_and_leaves_buf():
+def test_sanreader_fobj_guards_and_dispatch():
     payload = fobj(37, 100, 100, codec_header(0, 0, 0, 4, 0) + b"\x01\x02\x03\x04")
     r, frames = _read_one(payload)
-    assert frames[0].index == bytes(FRAME)
-    assert r.skipped["skip_small"] == 1
+    assert frames[0].index == bytes(FRAME) and r.skipped["skip_small"] == 1
 
+    r, frames = _read_one(fobj(37, 400, 200, b""))
+    assert frames[0].index == bytes(FRAME) and r.skipped["skip_big"] == 1
 
-def test_fobj_skip_big_counts_and_leaves_buf():
-    payload = fobj(37, 400, 200, b"")
-    r, frames = _read_one(payload)
-    assert frames[0].index == bytes(FRAME)
-    assert r.skipped["skip_big"] == 1
-
-
-def test_fobj_codec37_raw_frame_is_drawn():
     body = bytes([0x5A]) * FRAME
-    payload = fobj(37, W, H, codec_header(0, 0, 0, FRAME, 0) + body)
-    r, frames = _read_one(payload)
-    assert frames[0].index == body
-    assert r.skipped == {}
+    r, frames = _read_one(fobj(37, W, H, codec_header(0, 0, 0, FRAME, 0) + body))
+    assert frames[0].index == body and r.skipped == {}
 
-
-def test_fobj_unsupported_codec_raises():
-    payload = fobj(99, W, H, codec_header(0, 0, 0, FRAME, 0) + bytes(FRAME))
     with pytest.raises(DecodeError) as exc:
-        _read_one(payload)
+        _read_one(fobj(99, W, H, codec_header(0, 0, 0, FRAME, 0) + bytes(FRAME)))
     assert "unsupported codec 99" in exc.value.reason
 
 
-def test_fobj_decoder_is_stateful_across_frames():
+def test_sanreader_codec37_is_stateful_across_frames():
     # frame 0 seeds the back buffer; frame 1 must see the persistent decoder state.
     body0 = bytes([0x10]) * FRAME
     f0 = fobj(37, W, H, codec_header(0, 0, 0, FRAME, 0) + body0)

@@ -46,16 +46,12 @@ def san_record(pal_hash: str, frame: int) -> AssetRecord:
     )
 
 
-def test_rec_id_format():
-    assert rec_id("san", "SQ1.SAN", 0) == "san:sq1:00000"
-    assert rec_id("nut", "ROOM.NUT", 12) == "nut:room:00012"
-
-
-def test_manifest_keys_counts_and_palette_sidecar(tmp_path):
+def test_manifest_schema_counts_and_palette_sidecars(tmp_path):
     pal = make_pal()
+    h = palette_hash(pal)
     b = ManifestBuilder(tmp_path)
-    h = b.record_palette(pal)
-    assert h == palette_hash(pal)
+    assert b.record_palette(pal) == h
+    assert b.record_palette(pal) == h                    # idempotent
     b.add(san_record(h, 0))
     b.add(san_record(h, 1))
     b.finalize("2026-09-24T12:00:00Z", "deadbeef", error_count=3)
@@ -77,6 +73,11 @@ def test_manifest_keys_counts_and_palette_sidecar(tmp_path):
         "has_alpha", "palette", "path",
     ]
     assert doc["assets"][1]["id"] == "san:sq1:00001"
+    assert rec_id("san", "SQ1.SAN", 0) == "san:sq1:00000"
+    assert rec_id("nut", "ROOM.NUT", 12) == "nut:room:00012"
+
+    names = sorted(p.name for p in (tmp_path / "palettes").iterdir())
+    assert names == [f"{h}.json", f"{h}.png"]
 
     colors = json.loads((tmp_path / "palettes" / f"{h}.json").read_text())
     assert len(colors) == 256
@@ -88,31 +89,14 @@ def test_manifest_keys_counts_and_palette_sidecar(tmp_path):
     assert strip.getpixel((7, 0)) == (7, 21, 49)
 
 
-def test_record_palette_idempotent(tmp_path):
-    b = ManifestBuilder(tmp_path)
-    h1 = b.record_palette(make_pal())
-    h2 = b.record_palette(make_pal())
-    assert h1 == h2
-    names = sorted(p.name for p in (tmp_path / "palettes").iterdir())
-    assert names == [f"{h1}.json", f"{h1}.png"]
-
-
-def test_write_san_png_lossless(tmp_path):
+def test_png_writers(tmp_path):
     pal, index = make_pal(), make_index()
     write_san_png(tmp_path, Path("san/SQ1/00000.png"), SanFrame(index, pal))
-    out = tmp_path / "san/SQ1/00000.png"
-    assert out.exists()
-    im = Image.open(out)
-    assert im.mode == "RGB"
-    assert im.size == (W, H)
-    assert im.tobytes() == rgb_of(index, pal)
+    im = Image.open(tmp_path / "san/SQ1/00000.png")
+    assert im.mode == "RGB" and im.size == (W, H)
+    assert im.tobytes() == rgb_of(index, pal)            # SAN PNG is lossless RGB
 
-
-def test_write_indexed_png_transparent0(tmp_path):
-    pal, index = make_pal(), make_index()
-    write_indexed_png(
-        tmp_path, Path("la1/room.png"), index, W, H, pal, transparent0=True
-    )
+    write_indexed_png(tmp_path, Path("la1/room.png"), index, W, H, pal, transparent0=True)
     im = Image.open(tmp_path / "la1/room.png")
     assert im.mode == "RGBA"
     assert im.tobytes() == rgba_of(index, pal)
@@ -120,15 +104,9 @@ def test_write_indexed_png_transparent0(tmp_path):
     pos = next(i for i, p in enumerate(index) if p != 0)
     assert im.getpixel((pos % W, pos // W))[3] == 255
 
-
-def test_write_indexed_png_opaque_is_rgb(tmp_path):
-    pal, index = make_pal(), make_index()
-    write_indexed_png(
-        tmp_path, Path("nut/room/img_000.png"), index, W, H, pal, transparent0=False
-    )
+    write_indexed_png(tmp_path, Path("nut/room/img_000.png"), index, W, H, pal, transparent0=False)
     im = Image.open(tmp_path / "nut/room/img_000.png")
-    assert im.mode == "RGB"
-    assert im.tobytes() == rgb_of(index, pal)
+    assert im.mode == "RGB" and im.tobytes() == rgb_of(index, pal)
 
 
 def test_determinism_byte_identical(tmp_path):
