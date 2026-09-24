@@ -838,9 +838,9 @@ Rules:
 
 **Interfaces:**
 - Consumes: `DecodeError`, the `san-oracle akos` records.
-- Produces: `iter_cels(la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]` (reusing `La1Bitmap`, with `name = f"costume{id:03d}_{cel:03d}"`), folded into `iter_bitmaps` so LA1 output includes costume cels.
+- Produces: `digart.akos.iter_cels(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[AkosCel]` (`AkosCel` extends `La1Bitmap`; `name = f"costume{id:03d}_{cel:03d}"`). **Not folded into `iter_bitmaps`** — the LA1 differential gates exactly the 753 RMIM+OBIM records, so `iter_bitmaps` stays RMIM+OBIM and the CLI consumes both iterators.
 
-Rules: port the AKOS cel codecs and costume-table parsing from the vendored `akos.cpp`; faithful transcription; unknown codec → `DecodeError` in `errors`.
+Rules: port the AKOS cel codecs and costume-table parsing from the vendored `akos.cpp`/`base-costume.cpp`; faithful transcription; unknown codec → `DecodeError` in `errors`.
 
 - [ ] **Step 1: Tests**: a synthetic AKOS resource with a Byle-RLE cel asserting pixels; `@game` test over the real `DIG.LA1` printing the cel count.
 - [ ] **Step 2:** `make check` green; `make verify` → **AKOS cels byte-exact vs the oracle**, plus LA1 RMIM+OBIM, 55/55 SAN, 6/6 NUT.
@@ -854,7 +854,7 @@ Rules: port the AKOS cel codecs and costume-table parsing from the vendored `ako
 - Create: `digart/cli.py`, `tests/test_cli.py`; Modify: `README.md`, `docs/proofs/`
 
 **Interfaces:**
-- Consumes: `iter_frames`, `iter_images`, `iter_bitmaps`, `ManifestBuilder`, `rec_id`, `write_*_png`, `DecodeError`, `palette_hash`.
+- Consumes: `iter_frames`, `iter_images`, `iter_bitmaps`, `iter_cels`, `ManifestBuilder`, `rec_id`, `write_*_png`, `DecodeError`, `palette_hash`.
 - Produces: `main(argv: list[str] | None = None) -> int`; exit 0/1/2 per spec §6.
 
 - [ ] **Step 1: Implement `cli.py`**: argparse; `GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")`; `extract`: preflight (required relative paths under `Contents/Resources/game/game`: `VIDEO/`, `DIG.LA0`, `DIG.LA1`; missing → print list, exit 2; disk: `shutil.disk_usage(out).free` vs `(15 if san else 0 + 1) << 30`, `--force` bypasses); build task list from `--only`; `ProcessPoolExecutor(max_workers=--jobs or min(4, os.cpu_count()))` mapping each file `_extract_one(path, out) -> tuple[list[dict], list[dict]]` — worker opens the file **read-only** with `Path.read_bytes`, decodes, writes PNGs under `out/<kind>/<STEM>/`, returns manifest dicts + `to_dict()` errors; parent merges (sorted by `(source, index)`), `ManifestBuilder.finalize`, `_errors.json` only when non-empty, prints summary. `verify`: run all three differentials (`tools/diff_oracle.py`, `tools/diff_nut.py`, `tools/diff_la1.py`) — exit non-zero on any mismatch.
