@@ -20,8 +20,11 @@
 
 namespace Scumm {
 void smushDecodeRLE(byte *dst, const byte *src, int left, int top, int width, int height, int pitch);
+void bompDecodeLine(byte *dst, const byte *src, int len, bool setZero);
 }
 void nut_codec21(byte *dst, const byte *src, int width, int height, int pitch);
+int la1_decompress_strip(byte *dst, int dstPitch, const byte *src, int height, byte transparentColor);
+int la1_codec_supported(uint8 code);
 
 namespace {
 
@@ -237,11 +240,244 @@ void runDump(const uint8 *data, long n, const char *path) {
 	g_decoder = nullptr;
 }
 
+// ── LA1 (SCUMM v7 room / object bitmaps) ───────────────────────────────────
+//
+// Container walk transcribed from room.cpp:readRoomsOffsets /
+// setupRoomSubBlocks and object.cpp:getObjectImage. Chunk sizes are
+// header-inclusive with NO odd padding: next = chunk_start + size (census
+// docs/la1-census.txt). Decoding dispatches to the vendored gfx.cpp decoders
+// (la1_core.cpp) and the vendored bompDecodeLine; unknown codecs emit an LA1E
+// record instead of error().
+
+bool la1_is_tag(const uint8 *p) {
+	for (int i = 0; i < 4; ++i)
+		if (p[i] < 0x20 || p[i] > 0x7e)
+			return false;
+	return true;
+}
+
+// findResource (resource.cpp:1599): iterate the children of the chunk at
+// `start` (whose header-inclusive size is `start_size`); return the child
+// chunk start or nullptr.
+const uint8 *la1_find_child(const uint8 *start, uint32 start_size, const char *tag) {
+	const uint8 *end = start + start_size;
+	const uint8 *c = start + 8;
+	while (c + 8 <= end) {
+		if (!la1_is_tag(c))
+			return nullptr;
+		uint32 size = READ_BE_UINT32(c + 4);
+		if (size < 8 || c + size > end)
+			return nullptr;
+		if (memcmp(c, tag, 4) == 0)
+			return c;
+		c += size;
+	}
+	return nullptr;
+}
+
+// findPalInPals (palette.cpp:1523) at index 0: WRAP -> OFFS, then
+// offs + READ_LE_UINT32(offs) = the active APAL payload (768 bytes).
+const uint8 *la1_room_palette(const uint8 *pals) {
+	const uint8 *wrap = la1_find_child(pals, READ_BE_UINT32(pals + 4), "WRAP");
+	if (!wrap)
+		return nullptr;
+	const uint8 *offs = la1_find_child(wrap, READ_BE_UINT32(wrap + 4), "OFFS");
+	if (!offs)
+		return nullptr;
+	const uint8 *offsPayload = offs + 8;
+	return offsPayload + READ_LE_UINT32(offsPayload);
+}
+
+void emitLa1Bitmap(int w, int h, uint8 transparent, const uint8 *pal, const uint8 *idx) {
+	fwrite("LA1B", 1, 4, stdout);
+	uint8 hdr[5];
+	hdr[0] = (uint8)(w & 0xff);
+	hdr[1] = (uint8)((w >> 8) & 0xff);
+	hdr[2] = (uint8)(h & 0xff);
+	hdr[3] = (uint8)((h >> 8) & 0xff);
+	hdr[4] = transparent;
+	fwrite(hdr, 1, 5, stdout);
+	fwrite(pal, 1, 768, stdout);
+	fwrite(idx, 1, (size_t)w * h, stdout);
+}
+
+void emitLa1Error(uint32 off, const char *reason) {
+	fwrite("LA1E", 1, 4, stdout);
+	uint8 b[4];
+	b[0] = (uint8)(off & 0xff);
+	b[1] = (uint8)((off >> 8) & 0xff);
+	b[2] = (uint8)((off >> 16) & 0xff);
+	b[3] = (uint8)((off >> 24) & 0xff);
+	fwrite(b, 1, 4, stdout);
+	fwrite(reason, 1, strlen(reason), stdout);
+}
+
+// Codecs whose decompressBitmap arm maps to a transcribed strip decoder are
+// reported by la1_codec_supported() (la1_core.cpp); everything else becomes an
+// LA1E record via the callers below.
+
+// Decode one SMAP image (gfx.cpp:drawStrip v7 branch + decompressBitmap).
+// `smap` is the SMAP chunk start; `resOff` is the owning IMxx/IM00 chunk
+// offset, used for LA1E records.
+void la1_decode_smap(const uint8 *smap, int w, int h, const uint8 *pal,
+					 uint8 transparentColor, uint32 resOff) {
+	uint32 smaplen = READ_BE_UINT32(smap + 4);
+	int numstrips = w / 8;
+	size_t npix = (size_t)w * h;
+	uint8 *buf = (uint8 *)malloc(npix ? npix : 1);
+	if (!buf)
+		error("out of memory");
+	memset(buf, 0, npix);
+
+	bool transp = false;
+	for (int s = 0; s < numstrips; ++s) {
+		// drawStrip: offset = READ_LE_UINT32(smap_ptr + stripnr*4 + 8)
+		if ((uint32)(s * 4 + 8) >= smaplen) {
+			emitLa1Error(resOff, "SMAP strip table overrun");
+			free(buf);
+			return;
+		}
+		uint32 off = READ_LE_UINT32(smap + s * 4 + 8);
+		if (off >= smaplen) {
+			emitLa1Error(resOff, "SMAP strip offset out of range");
+			free(buf);
+			return;
+		}
+		uint8 code = smap[off];
+		if (!la1_codec_supported(code)) {
+			emitLa1Error(resOff, "unsupported SMAP codec");
+			free(buf);
+			return;
+		}
+		if (la1_decompress_strip(buf + (size_t)s * 8, w, smap + off, h, transparentColor))
+			transp = true;
+	}
+	emitLa1Bitmap(w, h, transp ? 1 : 0, pal, buf);
+	free(buf);
+}
+
+// Decode one BOMP image (object.cpp:drawBlastObject v7 path + decompressBomp).
+// `bomp` is the IMxx payload, i.e. the BOMP chunk start.
+void la1_decode_bomp(const uint8 *bomp, int w, int h, const uint8 *pal, uint32 resOff) {
+	const uint8 *data = bomp + 8; // BOMP payload ("skip the bomp header")
+	int bw = READ_LE_UINT16(data + 2);
+	int bh = READ_LE_UINT16(data + 4);
+	if (bw != w || bh != h) {
+		emitLa1Error(resOff, "BOMP dimensions disagree with IMHD");
+		return;
+	}
+	size_t npix = (size_t)w * h;
+	uint8 *buf = (uint8 *)malloc(npix ? npix : 1);
+	if (!buf)
+		error("out of memory");
+	memset(buf, 0, npix);
+	const uint8 *src = data + 10;
+	for (int y = 0; y < bh; ++y) {
+		Scumm::bompDecodeLine(buf + (size_t)y * w, src + 2, bw, true);
+		src += READ_LE_UINT16(src) + 2;
+	}
+	emitLa1Bitmap(w, h, 0, pal, buf);
+	free(buf);
+}
+
+void la1_process_room(const uint8 *data, uint32 roomOff) {
+	const uint8 *room = data + roomOff;
+	uint32 roomSize = READ_BE_UINT32(room + 4);
+	const uint8 *roomEnd = room + roomSize;
+
+	const uint8 *rmhd = la1_find_child(room, roomSize, "RMHD");
+	int rw = 0, rh = 0;
+	if (rmhd) {
+		rw = READ_LE_UINT16(rmhd + 8 + 4);
+		rh = READ_LE_UINT16(rmhd + 8 + 6);
+	}
+
+	const uint8 *trns = la1_find_child(room, roomSize, "TRNS");
+	uint8 transparentColor = trns ? trns[8] : 255;
+
+	uint8 palBuf[768];
+	const uint8 *pals = la1_find_child(room, roomSize, "PALS");
+	const uint8 *pal = pals ? la1_room_palette(pals) : nullptr;
+	if (!pal) {
+		memset(palBuf, 0, sizeof(palBuf));
+		pal = palBuf;
+	} else {
+		memcpy(palBuf, pal, sizeof(palBuf));
+		pal = palBuf;
+	}
+
+	const uint8 *c = room + 8;
+	while (c + 8 <= roomEnd) {
+		if (!la1_is_tag(c))
+			break;
+		uint32 size = READ_BE_UINT32(c + 4);
+		if (size < 8 || c + size > roomEnd)
+			break;
+
+		if (memcmp(c, "RMIM", 4) == 0) {
+			const uint8 *im00 = la1_find_child(c, size, "IM00");
+			if (im00) {
+				const uint8 *smap = la1_find_child(im00, READ_BE_UINT32(im00 + 4), "SMAP");
+				if (smap)
+					la1_decode_smap(smap, rw, rh, pal, transparentColor, (uint32)(im00 - data));
+			}
+		} else if (memcmp(c, "OBIM", 4) == 0) {
+			const uint8 *imhd = la1_find_child(c, size, "IMHD");
+			if (imhd) {
+				int ow = READ_LE_UINT16(imhd + 8 + 12);
+				int oh = READ_LE_UINT16(imhd + 8 + 14);
+				const uint8 *ic = c + 8;
+				while (ic + 8 <= c + size) {
+					if (!la1_is_tag(ic))
+						break;
+					uint32 isz = READ_BE_UINT32(ic + 4);
+					if (isz < 8 || ic + isz > c + size)
+						break;
+					if (ic[0] == 'I' && ic[1] == 'M' && ic[2] != 'H') {
+						const uint8 *payload = ic + 8;
+						if (memcmp(payload, "SMAP", 4) == 0)
+							la1_decode_smap(payload, ow, oh, pal, transparentColor, (uint32)(ic - data));
+						else if (memcmp(payload, "BOMP", 4) == 0)
+							la1_decode_bomp(payload, ow, oh, pal, (uint32)(ic - data));
+						else
+							emitLa1Error((uint32)(ic - data), "unknown OBIM image container");
+					}
+					ic += isz;
+				}
+			}
+		}
+		c += size;
+	}
+}
+
+// runLa1: LECF -> LOFF (u8 count, 111 x (u8 room, u32LE offset)) -> LFLF/ROOM.
+void runLa1(const uint8 *data, long n, const char *path) {
+	if (n < 16 || memcmp(data, "LECF", 4) != 0)
+		error("missing LECF magic in %s", path);
+	uint32 lecfSize = READ_BE_UINT32(data + 4);
+	if ((long)lecfSize > n)
+		error("LECF size %u overruns file in %s", lecfSize, path);
+	if (memcmp(data + 8, "LOFF", 4) != 0)
+		error("missing LOFF chunk in %s", path);
+
+	const uint8 *loff = data + 16;
+	uint8 count = loff[0];
+	for (int i = 0; i < count; ++i) {
+		uint32 roomOff = READ_LE_UINT32(loff + 2 + 5 * i);
+		if (roomOff < 8 || roomOff + 8 > (uint32)n)
+			error("room %d offset %u out of range in %s", i + 1, roomOff, path);
+		if (memcmp(data + roomOff, "ROOM", 4) != 0)
+			error("room %d at %u is not ROOM in %s", i + 1, roomOff, path);
+		la1_process_room(data, roomOff);
+	}
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
-	if (argc != 3 || (strcmp(argv[1], "dump") != 0 && strcmp(argv[1], "nut") != 0)) {
-		fprintf(stderr, "usage: san-oracle {dump|nut} FILE\n");
+	if (argc != 3 || (strcmp(argv[1], "dump") != 0 && strcmp(argv[1], "nut") != 0 &&
+					  strcmp(argv[1], "la1") != 0)) {
+		fprintf(stderr, "usage: san-oracle {dump|nut|la1} FILE\n");
 		return 2;
 	}
 
@@ -263,8 +499,10 @@ int main(int argc, char **argv) {
 
 	if (strcmp(argv[1], "dump") == 0)
 		runDump(data, n, argv[2]);
-	else
+	else if (strcmp(argv[1], "nut") == 0)
 		runNut(data, n, argv[2]);
+	else
+		runLa1(data, n, argv[2]);
 
 	free(data);
 	return 0;

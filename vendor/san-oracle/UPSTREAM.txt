@@ -7,3 +7,5 @@ e01654426a8f8bb1447fb5228673c25388901436c1939f2975c754d6f3528e16  ./engines/scum
 579e894a6bdfa2bf07c624e8731f071ec9db0c8516ead797674a495d01f9ef9d  ./engines/scumm/bomp.h
 272f2e547f37d6c1316d28ba0fc3a8259ca51c07297871e95ccc7f8ab91c8b08  ./engines/scumm/nut_renderer.cpp
 b69c89ade8c95635b7ed6bd455000070756e2a52bda89c05c40ab84ccbca8a71  ./engines/scumm/bomp.cpp
+9e02f8c814702cba46636dbe47a99d76275e6efbc1c31558f1fe65dd5ba1aa86  ./engines/scumm/gfx.cpp
+43e299c9ec349f5ae6d798b0a3eba17bba08242f08e86695a15718637b9c94fd  ./engines/scumm/gfx.h
