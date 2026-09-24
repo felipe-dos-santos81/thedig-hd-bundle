@@ -168,9 +168,13 @@ PNG writing strips timestamps so output is reproducible run-to-run.
 
 Rules: `id` = `"<kind-prefix>:<source-stem-lower>:<zero-padded index>"`; `frame`/`name`
 set per kind; `palette` is the hex sha256 of the 8-bit color table; entries are emitted
-in deterministic source-file/frame order. `has_alpha` is always `false` for `san_frame`
-(opaque back-buffer; index 0 = keep-previous), and `true` for `nut_image`/`la1_bitmap`
-(index 0 = transparent). A regeneration pipeline can group, condition, and trace every
+in deterministic source-file/frame order. `has_alpha` is `false` for `san_frame` (opaque
+back-buffer) and for opaque room-background bitmaps (`RMIM` decoded with a
+non-transparent strip codec); it is `true` for `nut_image`, for `OBIM` object images, and
+for `AKOS` costume cels. When `has_alpha` is `true` the decoder's transparent index is
+normalized to palette index 0 with alpha 0 before writing, leaving every non-transparent
+pixel's RGB unchanged — the index is `0` for `OBIM`/Byle cels, `2` for NUT codec 44, and
+`255` for CDAT/MajMin cels. A regeneration pipeline can group, condition, and trace every
 PNG from this file alone.
 
 ## 6. CLI
