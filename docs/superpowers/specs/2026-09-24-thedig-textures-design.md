@@ -114,6 +114,13 @@ Scripts, sounds, charsets and arrays are recognized and skipped. The exact tag i
 and codec set are captured by the §8 census probe (`docs/la1-census.txt`) before the
 decoder ships; every decodable bitmap is extracted, every other chunk logged.
 
+Costume/actor sprite sheets live in the `AKOS` chunks (331 resources, 58.5 MB): a costume
+resource holds cel bitmaps decoded by the Akos cel codecs (`paintCelByleRLE`,
+`paintCelCDATRLE`, `paintCelMajMin`/`majMinCodecDecompress`, `paintCelTRLE`, per
+`engines/scumm/akos.cpp`), with cel geometry from the costume's frame/limb tables.
+`OBIM` object images are `IMHD + IM01..IM0E`, each an SMAP or BOMP bitmap. `CHAR`
+charsets remain out of scope (glyph rendering, not texture art).
+
 Where the shipped GOG 1.7.0 fork differs from upstream on any of these paths, the
 differential gate (§7) fails loudly; the pinned commit is chosen so it passes.
 
@@ -207,9 +214,12 @@ thedig-textures verify  [--out <dir>]
   SMAP images with strip decoders transcribed verbatim from `engines/scumm/gfx.cpp`;
   `tools/diff_la1.py` compares them against `digart/la1.py` (0 mismatches over every
   image the oracle can decode). `docs/la1-census.txt` is the normative inventory of the
-  room-child tags, SMAP codec set, and palettes. Manual proof: documented comparison of
-  first frames of `SQ1`/menu screens against the running game (recorded under
-  `docs/proofs/` after first run).
+  room-child tags, SMAP codec set, and palettes.
+- `AKOS` correctness is byte-exact: `san-oracle akos DIG.LA1` decodes costume cels with
+  codecs transcribed verbatim from `engines/scumm/akos.cpp`; `tools/diff_akos.py`
+  compares them against `digart/akos.py` (0 mismatches). Manual proof: documented
+  comparison of first frames of `SQ1`/menu screens against the running game (recorded
+  under `docs/proofs/` after first run).
 
 ## 8. Testing
 
@@ -238,7 +248,8 @@ thedig-textures verify  [--out <dir>]
 digart/
   san.py       SMUSH reader + frame compositor (indexed buffer + palette + alpha mask)
   nut.py       .nut sheet/image parser
-  la1.py       SCUMM v7 index + room bitmap extraction
+  la1.py       SCUMM v7 index + room/object bitmap extraction (LECF/LOFF/ROOM, SMAP/BOMP)
+  akos.py      AKOS costume-cel decoder
   manifest.py  asset record builder, deterministic writer, hashers
   pngout.py    PNG/palette strip writing, no-timestamp policy
   cli.py       argparse entrypoint, preflight, orchestration, --jobs
@@ -259,8 +270,8 @@ Each module is independently testable and has one owner per format. Runtime deps
 ## 12. Success criteria (definition of done)
 
 1. `thedig-textures extract` completes on the user's bundle with zero unexpected errors.
-2. `make verify`: 55/55 SAN files, 6/6 NUT files, and every decodable LA1 image
-   byte-identical to the oracle; unit tests green.
+2. `make verify`: 55/55 SAN files, 6/6 NUT files, every decodable LA1 room/object image,
+   and every decodable AKOS costume cel byte-identical to the oracle; unit tests green.
 3. Every `.NUT` image and every decodable `LA1` bitmap present under `out/` and listed
    in `manifest.json`; each manifest entry's `path` exists and its `width`/`height`/
    `palette` match the file on disk.

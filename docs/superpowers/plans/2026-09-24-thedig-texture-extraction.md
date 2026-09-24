@@ -34,13 +34,15 @@ digart/bomp.py                     bomp_decode_line — port of engines/scumm/bo
 digart/codec37.py                  DeltaBlocksDecoder — port of smush/codec37.cpp (SAN FOBJ codec 37)
 digart/san.py                      SanFrame, iter_frames — SmushPlayer frame state machine
 digart/nut.py                      NutImage, iter_images — port of NutRenderer::loadFont
-digart/la1.py                      La1Bitmap, iter_bitmaps — LECF/LOFF/ROOM walker
+digart/la1.py                      La1Bitmap, iter_bitmaps — LECF/LOFF/ROOM + SMAP/BOMP
+digart/akos.py                     iter_cels — AKOS costume-cel decoder
 digart/manifest.py                 AssetRecord, ManifestBuilder, palette_hash
 digart/pngout.py                   deterministic PNG + palette-strip writers
 digart/cli.py                      extract/verify, preflight, --jobs orchestration
 tools/diff_oracle.py               python-vs-C++ differential over all .san files
 tools/diff_nut.py                  python-vs-C++ differential over all .nut files
-tools/diff_la1.py                  python-vs-C++ differential over DIG.LA1 bitmaps
+tools/diff_la1.py                  python-vs-C++ differential over DIG.LA1 room/object bitmaps
+tools/diff_akos.py                 python-vs-C++ differential over DIG.LA1 costume cels
 tools/la1_census.py                DIG.LA1 census + SMAP reconnaissance (Task 9)
 vendor/san-oracle/UPSTREAM.txt     pinned scummvm commit SHA + file hashes
 vendor/san-oracle/upstream/engines/scumm/{bomp.h,bomp.cpp,nut_renderer.cpp}   verbatim upstream
@@ -768,44 +770,85 @@ Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored
 
 ---
 
-### Task 10: LA1 SMAP oracle
+### Task 10: LA1 SMAP/BOMP oracle (RMIM + OBIM)
 
 **Files:**
-- Modify: `vendor/san-oracle/oracle_main.cpp`, `vendor/san-oracle/build.sh`; Create: `tools/diff_la1.py`
+- Modify: `vendor/san-oracle/oracle_main.cpp`, `vendor/san-oracle/build.sh`, `vendor/san-oracle/UPSTREAM.txt`; Create: `tools/diff_la1.py`
 
 **Interfaces:**
-- Produces: `san-oracle la1 FILE` → stdout records `b"LA1B" + u16LE(w,h) + u8 transparent + pal[768] + index[w*h]`, one per decodable bitmap (room images and object images) in file order, plus `b"LA1E" + u32LE(off) + <reason>` records for undecodable resources (so the Python side can match the error set).
-- Decoders are transcribed **verbatim** from `engines/scumm/gfx.cpp` (`vendor` it in this task): `Gdi::decompressBitmap` (`gfx.cpp:2963`) and the strip decoders required by the Task 9 codec histogram (`drawStripRaw`, `drawStripBasicV`, `drawStripBasicH`, `drawStripComplex` including its run-majmin variant, and the `MajMinCodec`/`MajMinCodec::setupBitReader` helper), with `_decomp_shr = code % 10` and `_decomp_mask = 0xFF >> (8 - _decomp_shr)`. Do not re-implement the codecs.
+- Produces: `san-oracle la1 FILE` → stdout records `b"LA1B" + u16LE(w,h) + u8 transparent + pal[768] + index[w*h]`, one per decodable room/object bitmap in file order, plus `b"LA1E" + u32LE(off) + <reason>` for undecodable resources (so the Python side can match the error set).
+- Decoders transcribed **verbatim** from `engines/scumm/gfx.cpp` (vendored here): `Gdi::decompressBitmap` (`gfx.cpp:2963`) and the strip decoders required by the Task 9 codec set — `drawStripRaw`, `drawStripBasicV`, `drawStripBasicH`, `drawStripComplex` (incl. its run-majmin variant), and the `MajMinCodec` helper — with `_decomp_shr = code % 10` and `_decomp_mask = 0xFF >> (8 - _decomp_shr)`. OBIM BOMP payloads reuse the already-extracted `bompDecodeLine`. Do not re-implement the codecs.
 
-- [ ] **Step 1:** Vendor `engines/scumm/gfx.cpp` + `gfx.h` (record in `UPSTREAM.txt`).
-- [ ] **Step 2:** Add the `la1` mode: walk `LECF`/`LOFF`/`LFLF`/`ROOM` with the header-inclusive stride, decode each `RMIM`/`OBIM` `IM00` SMAP via the transcribed decoders, resolve the palette (`PALS`/`APAL`), and emit records. Unknown codec → an `LA1E` record (not `error()`), so the Python side can match.
-- [ ] **Step 3:** `tools/diff_la1.py` (same shape as the other differentials) — compares `san-oracle la1` against `digart.la1.iter_bitmaps` (Task 11); fails until Task 11; do not weaken it.
-- [ ] **Step 4:** Gate: `make check` green; `san-oracle la1 DIG.LA1` exits 0 and its bitmap count matches the Task 9 census. Commit `"chore: LA1 SMAP oracle"`.
+**Census facts this task depends on** (`docs/la1-census.txt`):
+- `RMIM` = `RMIH` + `IM00` → `SMAP [+ ZP01]`; `smaplen` is the SMAP chunk size; dims from `RMHD`.
+- `OBIM` = `IMHD` + `IM01..IM0E`; each `IMxx` payload is SMAP (492) or BOMP (150); dims from `IMHD`.
+- Room palette: `PALS → WRAP → OFFS + N×APAL`, active palette index 0.
+- Stride is header-inclusive with **no odd padding** (`next = start + size`).
+
+- [ ] **Step 1:** Vendor `engines/scumm/gfx.cpp` + `gfx.h`; record in `UPSTREAM.txt`.
+- [ ] **Step 2:** Add the `la1` mode: walk `LECF`/`LOFF`(count u8 + 111×(u8 room, u32LE offset))/`LFLF`/`ROOM`; decode every `RMIM`/`OBIM` image; resolve the palette; emit records. Unknown codec → an `LA1E` record (not `error()`).
+- [ ] **Step 3:** `tools/diff_la1.py` — compares `san-oracle la1` against `digart.la1.iter_bitmaps` (Task 11); fails until Task 11; do not weaken it.
+- [ ] **Step 4:** Gate: `make check` green; `san-oracle la1 DIG.LA1` exits 0 and its bitmap count matches the census (111 RMIM + 642 OBIM images). Commit `"chore: LA1 SMAP/BOMP oracle"`.
 
 ---
 
-### Task 11: LA1 bitmap extraction + differential
+### Task 11: LA1 SMAP/BOMP port + differential
 
 **Files:**
 - Create: `digart/la1.py`, `tests/test_la1.py`; Modify: `Makefile` (add `tools/diff_la1.py` to `verify`)
 
 **Interfaces:**
-- Consumes: `DecodeError`, the `san-oracle la1` records, the Task 9 census.
-- Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent0: bool)`; `iter_bitmaps(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`. `name` is the resource stem + index (e.g. `room0042`, `obj0123`).
+- Consumes: `bomp_decode_line`, `DecodeError`, the `san-oracle la1` records, `docs/la1-census.txt`.
+- Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent0: bool)`; `iter_bitmaps(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`. `name` = `room<NNN>` for RMIM, `obj<NNN>_<state>` for OBIM.
 
 Rules:
-- Walk `LECF`/`LOFF`/`LFLF`/`ROOM` with the header-inclusive stride; extract `RMIM` and `OBIM` images.
-- Port the SMAP path from the vendored `gfx.cpp` (`decompressBitmap` + the strip decoders the census proves are used). Faithful transcription; no added bounds behavior.
-- Palette: room `PALS`/`APAL` per the census; `transparent0` is true only for the transparent strip variants (`*_HT*`/`*_VT*`).
-- Script/audio/auxiliary chunks (`OBCD`, `EXCD`, `NCD`, `XCD`, `ENCD`, `SCR`, `LSC`, `CYCL`, `TRNS`, `WRAP`, `OFFS`, …) are recognized and skipped; anything unhandled is appended to `errors` with its offset.
+- Walk with the header-inclusive stride; extract `RMIM` (room backdrops) and `OBIM` (object images).
+- Port the SMAP path from the vendored `gfx.cpp` (`decompressBitmap` + the strip decoders the census proves are used). OBIM BOMP payloads use `bomp_decode_line`. Faithful transcription; no added bounds behavior.
+- Palette from `PALS → WRAP → OFFS + APAL` (active index 0); `transparent0` true only for the transparent strip variants (`*_HT*`/`*_VT*`).
+- Script/audio/auxiliary chunks (`OBCD`, `EXCD`, `ENCD`, `LSCR`, `NLSC`, `SOUN`, `SCRP`, `CYCL`, `TRNS`, `BOXD`, `BOXM`, `SCAL`, `RMHD`, `AKOS`, `CHAR`) are recognized and skipped here; anything unhandled is appended to `errors` with its offset. (`AKOS`/`CHAR` are Task 12/13.)
 
-- [ ] **Step 1: Tests**: synthetic LA1 (`LECF`+`LOFF`+`LFLF`+`ROOM`+`RMIM`/`IM00`+`SMAP` with a RAW256 strip) asserting pixels + palette; `@game` test: `iter_bitmaps` over the real `DIG.LA0`/`DIG.LA1` prints counts and the error set is within the census-documented set.
-- [ ] **Step 2:** `make check` green; `make verify` → **LA1 100% of the oracle's decodable images byte-exact**, plus 55/55 SAN and 6/6 NUT. The oracle is authoritative — fix `digart/la1.py`, never the oracle.
-- [ ] **Step 3: Commit** `"feat: SCUMM v7 LA1 bitmap extraction; byte-exact vs oracle"`.
+- [ ] **Step 1: Tests**: synthetic LA1 (`LECF`+`LOFF`+`LFLF`+`ROOM`+`RMIM`/`IM00`+`SMAP` with a RAW256 strip) asserting pixels + palette; `@game` test over the real `DIG.LA0`/`DIG.LA1` printing counts and confirming the error set is within the census-documented set.
+- [ ] **Step 2:** `make check` green; `make verify` → **LA1 RMIM+OBIM byte-exact vs the oracle**, plus 55/55 SAN and 6/6 NUT. The oracle is authoritative — fix `digart/la1.py`, never the oracle.
+- [ ] **Step 3: Commit** `"feat: LA1 room/object bitmap extraction; byte-exact vs oracle"`.
 
 ---
 
-### Task 12: CLI wiring, end-to-end, proofs
+### Task 12: AKOS costume-cel oracle
+
+**Files:**
+- Modify: `vendor/san-oracle/oracle_main.cpp`, `build.sh`, `UPSTREAM.txt`; Create: `tools/diff_akos.py`
+
+**Interfaces:**
+- Produces: `san-oracle akos FILE` → stdout records `b"AKOS" + u32LE(costume) + u16LE(cel) + u16LE(w,h) + u8 transparent + index[w*h]`, one per decodable costume cel.
+- Decoders transcribed **verbatim** from `engines/scumm/akos.cpp` (vendored here): the cel codecs `paintCelByleRLE` (`:600`), `paintCelCDATRLE` (`:672`), `paintCelMajMin` (`:779`) + `majMinCodecDecompress` (`:739`), and `paintCelTRLE` (`:1035`) where the census shows they occur; plus the costume table parsing needed to enumerate cels (`AkosCostumeLoader::loadCostume` `:81`, `costumeDecodeData` `:93`). The renderer's drawing/clipping is NOT transcribed — only the cel pixel decode.
+
+**Census facts:** `AKOS` = 331 resources, 58.5 MB, class "costume (actor sprite)". `docs/la1-census.txt` is normative.
+
+- [ ] **Step 1:** Vendor `engines/scumm/akos.cpp`, `akos.h`, `actor.h`, `costume.h`; record in `UPSTREAM.txt`.
+- [ ] **Step 2:** Add the `akos` mode: for each `AKOS` resource, parse the costume tables and decode every cel's bitmap; emit records. Unknown codec → an `AKOS` error record (not `error()`).
+- [ ] **Step 3:** `tools/diff_akos.py` — compares `san-oracle akos` against `digart.akos.iter_cels` (Task 13); fails until Task 13; do not weaken it.
+- [ ] **Step 4:** Gate: `make check` green; `san-oracle akos DIG.LA1` exits 0 and its cel count matches the census. Commit `"chore: AKOS costume-cel oracle"`.
+
+---
+
+### Task 13: AKOS costume-cel extraction + differential
+
+**Files:**
+- Create: `digart/akos.py`, `tests/test_akos.py`; Modify: `digart/la1.py` (emit AKOS cels), `Makefile` (add `tools/diff_akos.py` to `verify`)
+
+**Interfaces:**
+- Consumes: `DecodeError`, the `san-oracle akos` records.
+- Produces: `iter_cels(la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]` (reusing `La1Bitmap`, with `name = f"costume{id:03d}_{cel:03d}"`), folded into `iter_bitmaps` so LA1 output includes costume cels.
+
+Rules: port the AKOS cel codecs and costume-table parsing from the vendored `akos.cpp`; faithful transcription; unknown codec → `DecodeError` in `errors`.
+
+- [ ] **Step 1: Tests**: a synthetic AKOS resource with a Byle-RLE cel asserting pixels; `@game` test over the real `DIG.LA1` printing the cel count.
+- [ ] **Step 2:** `make check` green; `make verify` → **AKOS cels byte-exact vs the oracle**, plus LA1 RMIM+OBIM, 55/55 SAN, 6/6 NUT.
+- [ ] **Step 3: Commit** `"feat: AKOS costume-cel extraction; byte-exact vs oracle"`.
+
+---
+
+### Task 14: CLI wiring, end-to-end, proofs
 
 **Files:**
 - Create: `digart/cli.py`, `tests/test_cli.py`; Modify: `README.md`, `docs/proofs/`
@@ -817,23 +860,6 @@ Rules:
 - [ ] **Step 1: Implement `cli.py`**: argparse; `GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")`; `extract`: preflight (required relative paths under `Contents/Resources/game/game`: `VIDEO/`, `DIG.LA0`, `DIG.LA1`; missing → print list, exit 2; disk: `shutil.disk_usage(out).free` vs `(15 if san else 0 + 1) << 30`, `--force` bypasses); build task list from `--only`; `ProcessPoolExecutor(max_workers=--jobs or min(4, os.cpu_count()))` mapping each file `_extract_one(path, out) -> tuple[list[dict], list[dict]]` — worker opens the file **read-only** with `Path.read_bytes`, decodes, writes PNGs under `out/<kind>/<STEM>/`, returns manifest dicts + `to_dict()` errors; parent merges (sorted by `(source, index)`), `ManifestBuilder.finalize`, `_errors.json` only when non-empty, prints summary. `verify`: run all three differentials (`tools/diff_oracle.py`, `tools/diff_nut.py`, `tools/diff_la1.py`) — exit non-zero on any mismatch.
 - [ ] **Step 2: Failing tests** `tests/test_cli.py`: fake-game dir (tmp_path with synthetic 2-frame SAN + synthetic .nut built by fixtures, plus empty `DIG.LA0/LA1` placeholders that yield zero bitmaps and zero errors); `main(["extract", "--game", fake_app, "--out", str(out), "--jobs", "1"])` → 0; manifest ids + `san:sq1:00001` present. Missing bundle → 2, stderr mentions `VIDEO`. Errors fixture (truncated SAN bytes) → `_errors.json` + exit 1.
 - [ ] **Step 3:** `make check` green, then the real run: `make verify` → **55/55 SAN + 6/6 NUT + LA1 byte-exact** (required; iterate the Python ports if not). Then real `thedig-textures extract` on the user's bundle; report total frames/PNGs/bytes; commit nothing from `out/` (gitignored).
-- [ ] **Step 4: Proofs**: copy three first frames (`san/SQ1/00000.png`, `san/SQ10/00000.png`, `san/PIGOUT/00000.png`) into `docs/proofs/first-frames/`; write `docs/proofs/README.md` comparing to an in-game screenshot you take once (launch the game, pause on screen 1, macOS `cmd-shift-4` — or state the user-supplied screenshot path): document that HUD/dialogue text is a runtime overlay deliberately excluded; list which on-screen elements in the screenshot should match frame pixels (background art) vs overlay (text, cursor, item bar). Commit `"docs: first-frame proofs vs in-game screens"`.
-- [ ] **Step 5:** Finalize `README.md` (real commands + manifest schema pointer + regeneration handoff note). `git add -A && git commit -m "feat: end-to-end CLI with full-bundle verification"`.
-
----
-
-### Task 10: CLI wiring, end-to-end, proofs
-
-**Files:**
-- Create: `digart/cli.py`, `tests/test_cli.py`; Modify: `README.md`, `docs/proofs/`
-
-**Interfaces:**
-- Consumes: `iter_frames`, `iter_images`, `iter_bitmaps`, `ManifestBuilder`, `rec_id`, `write_*_png`, `DecodeError`, `palette_hash`.
-- Produces: `main(argv: list[str] | None = None) -> int`; exit 0/1/2 per spec §6.
-
-- [ ] **Step 1: Implement `cli.py`**: argparse; `GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")`; `extract`: preflight (required relative paths under `Contents/Resources/game/game`: `VIDEO/`, `DIG.LA0`, `DIG.LA1`; missing → print list, exit 2; disk: `shutil.disk_usage(out).free` vs `(15 if san else 0 + 1) << 30`, `--force` bypasses); build task list from `--only`; `ProcessPoolExecutor(max_workers=--jobs or min(4, os.cpu_count()))` mapping each file `_extract_one(path, out) -> tuple[list[dict], list[dict]]` — worker opens the file **read-only** with `Path.read_bytes`, decodes, writes PNGs under `out/<kind>/<STEM>/`, returns manifest dicts + `to_dict()` errors; parent merges (sorted by `(source, index)`), `ManifestBuilder.finalize`, `_errors.json` only when non-empty, prints summary. `verify`: run both differentials (`tools/diff_oracle.py`, `tools/diff_nut.py`) — exit non-zero on any mismatch.
-- [ ] **Step 2: Failing tests** `tests/test_cli.py`: fake-game dir (tmp_path with synthetic 2-frame SAN + synthetic .nut built by fixtures, plus empty `DIG.LA0/LA1` placeholders that yield zero bitmaps and zero errors); `main(["extract", "--game", fake_app, "--out", str(out), "--jobs", "1"])` → 0; manifest ids + `san:sq1:00001` present + `verify`-absent ok. Missing bundle → 2, stderr mentions `VIDEO`. Errors fixture (truncated SAN bytes) → `_errors.json` + exit 1.
-- [ ] **Step 3:** `make check` green, then the real run: `make verify` → **55/55 SAN + 6/6 NUT identical** (required; iterate the Python ports if not). Then real `thedig-textures extract` on the user's bundle; report total frames/PNGs/bytes; commit nothing from `out/` (gitignored).
 - [ ] **Step 4: Proofs**: copy three first frames (`san/SQ1/00000.png`, `san/SQ10/00000.png`, `san/PIGOUT/00000.png`) into `docs/proofs/first-frames/`; write `docs/proofs/README.md` comparing to an in-game screenshot you take once (launch the game, pause on screen 1, macOS `cmd-shift-4` — or state the user-supplied screenshot path): document that HUD/dialogue text is a runtime overlay deliberately excluded; list which on-screen elements in the screenshot should match frame pixels (background art) vs overlay (text, cursor, item bar). Commit `"docs: first-frame proofs vs in-game screens"`.
 - [ ] **Step 5:** Finalize `README.md` (real commands + manifest schema pointer + regeneration handoff note). `git add -A && git commit -m "feat: end-to-end CLI with full-bundle verification"`.
 
@@ -866,7 +892,7 @@ The vendored `NutRenderer::codec21` (`nut_renderer.cpp:65-94`) is authoritative;
 
 ## Plan Self-Review (re-checked after the codec-37, NUT, and LA1 re-plans)
 
-- Spec coverage: §2→T12 preflight; §3→T3/T5 (SAN), T7/T8 (NUT), T9-T11 (LA1); §4→T2-T5, T7/T8, T9-T11; §5→T6 (+ ids via `rec_id`); §6→T12; §7→T4/T5 (SAN oracle→port), T7/T8 (NUT), T10/T11 (LA1); §8→per-task test steps + T12 Step 3; §9→error paths in every module; §11→T12 disk preflight; §12→T12 Steps 3-4.
-- Verified against the bundle: SAN — 12,637 `FOBJ` all codec 37, 12,638 `FRME`, `IACT` audio-only. NUT — `AHDR` + one `FRME`/`FOBJ` per glyph, codecs 1/44, transparency 0/2, 1403 glyphs. LA1 — header-inclusive chunk sizes, `LECF`/`LOFF`(110 entries)/`LFLF`/`ROOM`, SMAP images with a `RMAJMIN`/`ZIGZAG`/`RAW256` codec mix. The plan matches all three.
-- Placeholders: none. Tasks that instruct "transcribe the vendored function" (T4/T10 `oracle_main.cpp`, T5 `codec37.py`, T7 oracle `nut` mode, T8 `nut.py`, T11 `la1.py`) name the vendored file as the content. Task 10/11 detail is bounded by the Task 9 census, which is committed before they run.
-- Type consistency: `iter_frames` (T3→T5→T12), `SanFrame` (T3→T6), `DeltaBlocksDecoder.decode` (T5), `san-oracle dump`/`nut`/`la1` (T4/T7/T10→T5/T8/T11), `NutImage.transparent` (T8→T12), `La1Bitmap`/`iter_bitmaps` (T11→T12), `AssetRecord`/`rec_id` (T6→T12), `DecodeError.to_dict` (T1→T6 `_errors.json`).
+- Spec coverage: §2→T14 preflight; §3→T3/T5 (SAN), T7/T8 (NUT), T9-T13 (LA1); §4→T2-T5, T7/T8, T9-T13; §5→T6 (+ ids via `rec_id`); §6→T14; §7→T4/T5 (SAN), T7/T8 (NUT), T10-T13 (LA1/AKOS); §8→per-task test steps + T14 Step 3; §9→error paths in every module; §11→T14 disk preflight; §12→T14 Steps 3-4.
+- Verified against the bundle: SAN — 12,637 `FOBJ` all codec 37, 12,638 `FRME`, `IACT` audio-only. NUT — `AHDR` + one `FRME`/`FOBJ` per glyph, codecs 1/44, transparency 0/2, 1403 glyphs. LA1 — header-inclusive stride (no padding), `LECF`/`LOFF`(111 records of `u8 room + u32LE offset`)/`LFLF`/`ROOM`; `RMIM`(111) SMAP, `OBIM`(842) SMAP/BOMP, `AKOS`(331) costume cels; `PALS→WRAP→OFFS→APAL`. The plan matches all three.
+- Placeholders: none. Tasks that instruct "transcribe the vendored function" (T4/T10/T12 `oracle_main.cpp`, T5 `codec37.py`, T7 oracle `nut` mode, T8 `nut.py`, T11 `la1.py`, T13 `akos.py`) name the vendored file as the content. Task 10-13 detail is bounded by the committed Task 9 census.
+- Type consistency: `iter_frames` (T3→T5→T14), `SanFrame` (T3→T6), `DeltaBlocksDecoder.decode` (T5), `san-oracle dump`/`nut`/`la1`/`akos` (T4/T7/T10/T12→T5/T8/T11/T13), `NutImage.transparent` (T8→T14), `La1Bitmap` (T11/T13→T14), `iter_bitmaps`/`iter_cels` (T11/T13→T14), `AssetRecord`/`rec_id` (T6→T14), `DecodeError.to_dict` (T1→T6 `_errors.json`).
