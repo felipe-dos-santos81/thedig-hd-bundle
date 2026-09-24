@@ -16,7 +16,7 @@
 - License: GPL-3.0-or-later. Vendored upstream files keep their original headers; the sed-extracted regions in the oracle are verbatim (no re-typing).
 - The game bundle (`~/Documents/The Dig®.app`) is opened **read-only, always**; nothing is ever written under it.
 - Screen model for The Dig SANs: 320×200 (`FRAME_W = 320`, `FRAME_H = 200`). Palettes are 768-byte 8-bit RGB, used verbatim (no 6-bit scaling).
-- SAN frames are opaque RGB: every `FRME`'s `FOBJ` is codec 37 (`SMUSH_CODEC_DELTA_BLOCKS`), a stateful delta-block decoder that writes a full 320×200 frame into the back buffer; NUT/LA1 glyph/costume bitmaps map index 0 to alpha 0 in the PNG writer.
+- SAN frames are opaque RGB: every `FRME`'s `FOBJ` is codec 37 (`SMUSH_CODEC_DELTA_BLOCKS`), a stateful delta-block decoder that writes a full 320×200 frame into the back buffer; NUT/LA1 glyph and costume bitmaps are emitted RGBA with the decoder's transparent index normalized to alpha 0 in the PNG writer (`0` for NUT codec 1, transparent SMAP `OBIM` and Byle cels; `2` for NUT codec 44; `255` for BOMP `OBIM` and CDAT/MajMin cels).
 - Output must be deterministic: PNGs carry no timestamps; the manifest's `extracted_at` is an explicit caller input (determinism means identical inputs → identical bytes), not a writer-injected timestamp; entries in sorted source-file order with zero-padded frame indices.
 - `make check` (unit tests only, game-marked tests deselected) must be green at every commit; `make verify` additionally runs the 55-file oracle differential.
 - Commit per task with conventional messages (`feat:`/`test:`/`chore:`).
@@ -30,7 +30,7 @@ Makefile                           check / oracle / verify targets
 README.md                          usage (final in Task 9)
 digart/__init__.py                 __version__
 digart/errors.py                   DecodeError(source, offset, reason)
-digart/bomp.py                     bomp_decode_line — port of engines/scumm/bomp.cpp
+digart/bomp.py                     bomp_decode_line / bomp_decode_rows — port of engines/scumm/bomp.cpp
 digart/codec37.py                  DeltaBlocksDecoder — port of smush/codec37.cpp (SAN FOBJ codec 37)
 digart/san.py                      SanFrame, iter_frames — SmushPlayer frame state machine
 digart/nut.py                      NutImage, iter_images — port of NutRenderer::loadFont
@@ -195,7 +195,7 @@ def test_version():
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `bomp_decode_line(dst: bytearray, dst_off: int, src: bytes, src_off: int, size: int, set_zero: bool = True) -> None` — decodes exactly `size` pixels of one BOMP line into `dst` at `dst_off`. Offsets (not slices) preserve C pass-by-value semantics: the caller's row cursor advances by the row, never by what the line wrote.
+- Produces: `bomp_decode_line(dst: bytearray, dst_off: int, src: bytes, src_off: int, size: int, set_zero: bool = True) -> None` — decodes exactly `size` pixels of one BOMP line into `dst` at `dst_off`. Offsets (not slices) preserve C pass-by-value semantics: the caller's row cursor advances by the row, never by what the line wrote. Plus `bomp_decode_rows(dst, dst_pitch, src, src_off, width, height, set_zero=True) -> None` — the shared u16LE-length-prefixed row loop used by the LA1/OBIM, AKOS/CDAT and NUT/codec-1 decoders.
 
 Upstream C (authoritative; vendored verbatim in Task 5):
 ```c
@@ -724,14 +724,14 @@ def rec_id(kind: str, source: str, frame: int) -> str:
 - Create: `digart/nut.py`, `tests/test_nut.py`; Modify: `tests/fixtures/make_fixtures.py` (add `mk_nut`), `Makefile` (run the NUT differential in `verify`)
 
 **Interfaces:**
-- Consumes: `bomp_decode_line`, `DecodeError`, the vendored `nut_renderer.cpp`, the `san-oracle nut` records.
+- Consumes: `bomp_decode_rows`, `DecodeError`, the vendored `nut_renderer.cpp`, the `san-oracle nut` records.
 - Produces:
   - `NutImage(name: str, index: bytes, width: int, height: int, palette: bytes, transparent: int)` — `transparent` is the index that maps to alpha 0 (`0` for codec 1, `2` for codec 44).
   - `iter_images(data: bytes, source: str) -> Iterator[NutImage]`; `name = f"{Path(source).stem.lower()}:{i:03d}"`.
 
 Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored file):
 - Walk `ANIM` → `AHDR` → per-glyph `FRME`/`FOBJ` per the Task 7 layout; `palette = ahdr_payload[6:774]`; raise `DecodeError` on stride desync.
-- Per glyph: `buf = bytearray(w*h)` memset to the transparency index; codec 1 → a local `smush_decode_rle(buf, data, w, h, pitch=w)` port of the vendored `smushDecodeRLE` (per row: `bomp_decode_line(buf, row, src, 2, w, set_zero=False)`; `src += u16LE(src) + 2`); codec 44 → `nut_codec21(buf, data, w, h, w)` ported from the vendored `codec21` (note: `dst += offs`, then copy `w` bytes — **not** `offs * pitch`).
+- Per glyph: `buf = bytearray(w*h)` memset to the transparency index; codec 1 → a local `smush_decode_rle(buf, data, w, h, pitch=w)` port of the vendored `smushDecodeRLE` (`bomp_decode_rows(buf, pitch, data, 0, w, h, set_zero=False)`); codec 44 → `nut_codec21(buf, data, w, h, w)` ported from the vendored `codec21` (note: `dst += offs`, then copy `w` bytes — **not** `offs * pitch`).
 - Unknown codec → `DecodeError`.
 
 - [ ] **Step 1: Fixture + failing tests.** `mk_nut(glyphs=[(codec, w, h, payload), ...])` building `ANIM`+`AHDR`+one `FRME(FOBJ)` per glyph (no metadata chunk), with `numChars` at AHDR+10 and the palette at payload[6:774]. Assert width/height/palette/transparent and decoded pixels for a hermetic codec-1 and codec-44 glyph.
@@ -797,12 +797,12 @@ Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored
 - Create: `digart/la1.py`, `tests/test_la1.py`; Modify: `Makefile` (add `tools/diff_la1.py` to `verify`)
 
 **Interfaces:**
-- Consumes: `bomp_decode_line`, `DecodeError`, the `san-oracle la1` records, `docs/la1-census.txt`.
+- Consumes: `bomp_decode_rows`, `DecodeError`, the `san-oracle la1` records, `docs/la1-census.txt`.
 - Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent: int | None)` with a derived `transparent0` property (`transparent == 0`); `iter_bitmaps(la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`. `name` = `room<NNN>` for RMIM, `obj<NNN>_<state>` for OBIM.
 
 Rules:
 - Walk with the header-inclusive stride; extract `RMIM` (room backdrops) and `OBIM` (object images).
-- Port the SMAP path from the vendored `gfx.cpp` (`decompressBitmap` + the strip decoders the census proves are used). OBIM BOMP payloads use `bomp_decode_line`. Faithful transcription; no added bounds behavior.
+- Port the SMAP path from the vendored `gfx.cpp` (`decompressBitmap` + the strip decoders the census proves are used). OBIM BOMP payloads use `bomp_decode_rows`. Faithful transcription; no added bounds behavior.
 - Palette from `PALS → WRAP → OFFS + APAL` (active index 0); `transparent0` true only for the transparent strip variants (`*_HT*`/`*_VT*`).
 - Script/audio/auxiliary chunks (`OBCD`, `EXCD`, `ENCD`, `LSCR`, `NLSC`, `SOUN`, `SCRP`, `CYCL`, `TRNS`, `BOXD`, `BOXM`, `SCAL`, `RMHD`, `AKOS`, `CHAR`) are recognized and skipped here; anything unhandled is appended to `errors` with its offset. (`AKOS`/`CHAR` are Task 12/13.)
 

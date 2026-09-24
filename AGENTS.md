@@ -21,7 +21,8 @@ truth: SAN 55/55, NUT 6/6, LA1 and AKOS byte-identical.
 
 - `digart/` — the decoders and writers: `san.py`, `codec37.py`, `bomp.py`, `nut.py`,
   `la1.py`, `akos.py`, `manifest.py`, `pngout.py`, `cli.py`, `errors.py`.
-- `tools/` — the `diff_*.py` differential harnesses and `la1_census.py`.
+- `tools/` — the `diff_*.py` differential harnesses, their shared `_oracle.py`
+  harness, and `la1_census.py`.
 - `vendor/san-oracle/` — verbatim upstream ScummVM sources (hash-pinned in
   `UPSTREAM.txt`) plus a thin `oracle_main.cpp` shim. Do not edit vendored files.
 - `docs/la1-census.txt` — the normative LA1 inventory the decoders must match.

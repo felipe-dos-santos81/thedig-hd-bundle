@@ -18,10 +18,7 @@ def mk_akos(byle: bytes, w: int = 2, h: int = 2, codec: int = 1,
     akcd = chunk(b"AKCD", byle)
     akof = chunk(b"AKOF", fx.le32(0) + fx.le16(0))
     akos = chunk(b"AKOS", akhd + akpl + akci + akcd + akof)
-    room = chunk(b"ROOM", b"")
-    lflf = chunk(b"LFLF", room + akos)
-    loff = chunk(b"LOFF", bytes([1, 1]) + fx.le32(30))
-    return chunk(b"LECF", loff + lflf)
+    return fx.la1_container(chunk(b"ROOM", b"") + akos)
 
 
 def test_akos_cel_decoding_and_errors():

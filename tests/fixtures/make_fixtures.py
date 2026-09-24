@@ -78,6 +78,23 @@ def la1_chunk(tag: bytes, payload: bytes) -> bytes:
     return tag + be32(8 + len(payload)) + payload
 
 
+def la1_container(room_body: bytes, room: int = 1) -> bytes:
+    """LECF -> LOFF (one room) -> LFLF wrapping ``room_body``."""
+    loff = la1_chunk(b"LOFF", bytes([1, room]) + le32(30))
+    return la1_chunk(b"LECF", loff + la1_chunk(b"LFLF", room_body))
+
+
+def palette_wrap(pal: bytes) -> bytes:
+    """The room's active palette: PALS -> WRAP -> OFFS(12) + APAL."""
+    wrap = la1_chunk(b"WRAP", la1_chunk(b"OFFS", le32(12)) + la1_chunk(b"APAL", pal))
+    return la1_chunk(b"PALS", wrap)
+
+
+def smap(codec: int, strip: bytes, w: int, h: int) -> bytes:
+    """SMAP with a single strip whose codec byte sits at payload[offset[0]]."""
+    return la1_chunk(b"SMAP", le32(8 + 4 * (w // 8)) + bytes([codec]) + strip)
+
+
 def codec_header(variant: int, table: int = 0, seq: int = 0,
                  decoded_size: int = 0, mask: int = 0) -> bytes:
     """16-byte codec-37 sub-header: variant, table, seq, size, 4 pad, mask, 3 pad."""

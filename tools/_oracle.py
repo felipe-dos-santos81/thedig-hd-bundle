@@ -57,11 +57,15 @@ def preflight() -> int | None:
     return None
 
 
-def _print_errors(path: Path, errors: list[str]) -> None:
+def _print_errors(path: Path, errors: list[str]) -> bool:
+    """Print the first mismatches for ``path``; return True when there were any."""
+    if not errors:
+        return False
     for line in errors[:5]:
         print(line, file=sys.stderr)
     if len(errors) > 5:
         print(f"{path.name}: ... {len(errors) - 5} more mismatch(es)", file=sys.stderr)
+    return True
 
 
 def run_files(files: list[Path], compare: Callable[[Path], list[str]]) -> int:
@@ -70,9 +74,8 @@ def run_files(files: list[Path], compare: Callable[[Path], list[str]]) -> int:
     matched = 0
     for path in files:
         errors = compare(path)
-        if errors:
+        if _print_errors(path, errors):
             total_errors += len(errors)
-            _print_errors(path, errors)
         else:
             matched += 1
     if total_errors:
@@ -84,8 +87,7 @@ def run_files(files: list[Path], compare: Callable[[Path], list[str]]) -> int:
 
 def run_single(path: Path, errors: list[str], label: str) -> int:
     """Report one file's comparison result (the LA1/AKOS gates)."""
-    if errors:
-        _print_errors(path, errors)
+    if _print_errors(path, errors):
         print(f"FAIL: {len(errors)} mismatch(es)", file=sys.stderr)
         return 1
     print(label)

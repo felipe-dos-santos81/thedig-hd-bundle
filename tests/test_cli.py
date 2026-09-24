@@ -23,7 +23,7 @@ chunk = fx.la1_chunk
 
 def empty_la1() -> bytes:
     """A valid LECF/LOFF container with zero rooms: no bitmaps, no errors."""
-    return b"LECF" + struct.pack(">I", 17) + b"LOFF" + struct.pack(">I", 8) + b"\x00"
+    return fx.la1_chunk(b"LECF", fx.la1_chunk(b"LOFF", b"\x00"))
 
 
 def obim_bomp_la1() -> bytes:
@@ -40,10 +40,7 @@ def obim_bomp_la1() -> bytes:
     imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, w, h))
     obim = chunk(b"OBIM", imhd + chunk(b"IM01", bomp))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, h, 0))
-    wrap = chunk(b"WRAP", chunk(b"OFFS", struct.pack("<I", 12)) + chunk(b"APAL", PAL))
-    room = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)
-    loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
-    return chunk(b"LECF", loff + chunk(b"LFLF", room))
+    return fx.la1_container(chunk(b"ROOM", rmhd + fx.palette_wrap(PAL) + obim))
 
 
 def obim_smap_la1() -> bytes:
@@ -53,16 +50,11 @@ def obim_smap_la1() -> bytes:
     index, so the sprite must stay opaque RGB.
     """
     width, height = 8, 1
-    off = 8 + 4 * (width // 8)
-    smap = chunk(b"SMAP", struct.pack("<I", off) + bytes([1])
-                 + bytes(range(1, width * height + 1)))
     imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, width, height))
-    obim = chunk(b"OBIM", imhd + chunk(b"IM01", smap))
+    strip = bytes(range(1, width * height + 1))
+    obim = chunk(b"OBIM", imhd + chunk(b"IM01", fx.smap(1, strip, width, height)))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, width, height, 0))
-    wrap = chunk(b"WRAP", chunk(b"OFFS", struct.pack("<I", 12)) + chunk(b"APAL", PAL))
-    room = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)
-    loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
-    return chunk(b"LECF", loff + chunk(b"LFLF", room))
+    return fx.la1_container(chunk(b"ROOM", rmhd + fx.palette_wrap(PAL) + obim))
 
 
 def akos_cdat_la1() -> bytes:
@@ -79,8 +71,7 @@ def akos_cdat_la1() -> bytes:
     akci = chunk(b"AKCI", struct.pack("<HH", 2, 2))
     akof = chunk(b"AKOF", struct.pack("<I", 0) + struct.pack("<H", 0))
     akos = chunk(b"AKOS", akhd + akpl + akci + akcd + akof)
-    loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
-    return chunk(b"LECF", loff + chunk(b"LFLF", chunk(b"ROOM", b"") + akos))
+    return fx.la1_container(chunk(b"ROOM", b"") + akos)
 
 
 def make_app(tmp_path: Path, san: bytes, nut: bytes, la1: bytes) -> Path:
