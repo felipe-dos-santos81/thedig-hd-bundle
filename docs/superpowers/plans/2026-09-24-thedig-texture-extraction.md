@@ -534,7 +534,7 @@ def iter_frames(data: bytes, source: str = "?") -> Iterator[SanFrame]:
 ### Task 4: Vendored upstream sources + C++ oracle + differential harness
 
 **Files:**
-- Create: `vendor/san-oracle/{UPSTREAM.txt, shim.h, build.sh, oracle_main.cpp}`, vendored `vendor/san-oracle/upstream/engines/scumm/{bomp.h, bomp.cpp, nut_renderer.cpp, smush/codec1.cpp, smush/codec37.cpp, smush/codec37.h, smush/smush_player.cpp}`, stub headers `vendor/san-oracle/inc/common/{scummsys.h, endian.h, textconsole.h, util.h}`, `tools/diff_oracle.py`
+- Create: `vendor/san-oracle/{UPSTREAM.txt, shim.h, build.sh, oracle_main.cpp}`, vendored `vendor/san-oracle/upstream/engines/scumm/{bomp.h, bomp.cpp, nut_renderer.cpp, smush/codec1.cpp, smush/codec37.cpp, smush/codec37.h, smush/smush_player.cpp}`, stub headers `vendor/san-oracle/inc/common/{scummsys.h, endian.h, textconsole.h, util.h}` + `vendor/san-oracle/inc/graphics/surface.h`, `tools/diff_oracle.py`
 
 **Interfaces:**
 - Produces: `vendor/san-oracle/san-oracle dump FILE` → stdout stream of records `b"FRMK" + "<HH"(w,h) + pal[768] + index[w*h]`, one per `FRME`, in file order. Exit 2 + stderr message on malformed stream.
@@ -576,7 +576,7 @@ typedef int16_t int16; typedef uint16_t uint16; typedef int32_t int32; typedef u
 #define CLIP(v, lo, hi) ((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
 #define error(...) do { fprintf(stderr, "oracle: " __VA_ARGS__); fputc('\n', stderr); exit(2); } while (0)
 ```
-Stub headers under `inc/`: `inc/common/scummsys.h` (typedefs, pulled from `shim.h`), `inc/common/endian.h` (`READ_LE_UINT16/UINT32`), `inc/common/textconsole.h` (empty), `inc/common/util.h` (empty). Each is one `#include "../shim.h"` line. Compile with `-I upstream/engines -I inc` so `"scumm/..."` resolves to the vendored files and `"common/..."` to the stubs.
+Stub headers under `inc/`: `inc/common/scummsys.h` (typedefs, pulled from `shim.h`), `inc/common/endian.h` (`READ_LE_UINT16/UINT32`), `inc/common/textconsole.h` (empty), `inc/common/util.h` (empty), and `inc/graphics/surface.h` (`namespace Graphics { struct Surface {}; }`, needed because the vendored `bomp.h` declares `BompDrawData` which embeds `Graphics::Surface`). Each is one `#include "../shim.h"` line (the `graphics/` stub needs one level less). Compile with `-I upstream/engines -I inc` so `"scumm/..."` resolves to the vendored files and `"common/..."`/`"graphics/..."` to the stubs.
 
 - [ ] **Step 3: `build.sh`** — extract, compile, link:
 ```bash
