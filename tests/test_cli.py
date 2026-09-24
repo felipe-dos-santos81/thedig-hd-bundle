@@ -36,19 +36,38 @@ def empty_la1() -> bytes:
 
 
 def obim_bomp_la1() -> bytes:
-    """One room with a single 2x2 OBIM BOMP object sprite (index 0 transparent).
+    """One room with a single 2x2 OBIM BOMP object sprite (index 255 transparent).
 
-    The sprite's pixels are ``[0, 5, 6, 0]``; ``_decode_bomp`` reports
-    ``transparent0=False`` but OBIM sprites must still be emitted with index 0
-    alpha 0.
+    The sprite's pixels are ``[255, 5, 6, 255]``; ``_decode_bomp`` reports
+    ``transparent0=False`` but a BOMP OBIM's transparent index is 255, so it must
+    be emitted RGBA with alpha 0 where the buffer held 255.
     """
     w = h = 2
-    row0 = struct.pack("<H", 3) + bytes([2, 0, 5])   # literal run -> [0, 5]
-    row1 = struct.pack("<H", 3) + bytes([2, 6, 0])   # literal run -> [6, 0]
+    row0 = struct.pack("<H", 3) + bytes([2, 255, 5])   # literal run -> [255, 5]
+    row1 = struct.pack("<H", 3) + bytes([2, 6, 255])   # literal run -> [6, 255]
     bomp = chunk(b"BOMP", bytes(2) + struct.pack("<HH", w, h) + bytes(4) + row0 + row1)
     imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, w, h))
     obim = chunk(b"OBIM", imhd + chunk(b"IM01", bomp))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, h, 0))
+    wrap = chunk(b"WRAP", chunk(b"OFFS", struct.pack("<I", 12)) + chunk(b"APAL", PAL))
+    room = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)
+    loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
+    return chunk(b"LECF", loff + chunk(b"LFLF", room))
+
+
+def obim_smap_la1() -> bytes:
+    """One room with a single 8x1 OBIM SMAP object sprite (RAW256, opaque).
+
+    A non-transparent SMAP strip leaves ``transparent0=False`` and no transparent
+    index, so the sprite must stay opaque RGB.
+    """
+    width, height = 8, 1
+    off = 8 + 4 * (width // 8)
+    smap = chunk(b"SMAP", struct.pack("<I", off) + bytes([1])
+                 + bytes(range(1, width * height + 1)))
+    imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, width, height))
+    obim = chunk(b"OBIM", imhd + chunk(b"IM01", smap))
+    rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, width, height, 0))
     wrap = chunk(b"WRAP", chunk(b"OFFS", struct.pack("<I", 12)) + chunk(b"APAL", PAL))
     room = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)
     loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
@@ -200,11 +219,24 @@ def test_obim_bomp_sprite_is_rgba_with_alpha(tmp_path):
     im = Image.open(out / asset["path"])
     assert im.mode == "RGBA"
     assert im.size == (2, 2)
-    assert im.getpixel((0, 0))[3] == 0        # index 0 -> transparent
+    assert im.getpixel((0, 0))[3] == 0        # index 255 -> transparent
     assert im.getpixel((1, 1))[3] == 0
     assert im.getpixel((1, 0))[3] == 255      # non-transparent pixels keep alpha
     assert im.getpixel((1, 0))[:3] == tuple(PAL[5 * 3:5 * 3 + 3])
     assert im.getpixel((0, 1))[:3] == tuple(PAL[6 * 3:6 * 3 + 3])
+
+
+def test_obim_smap_non_transparent_stays_opaque(tmp_path):
+    app = make_app(tmp_path, san=b"", nut=b"", la1=obim_smap_la1())
+    out = tmp_path / "out"
+    assert main(["extract", "--game", str(app), "--out", str(out),
+                 "--only", "la1", "--jobs", "1"]) == 0
+
+    doc = read_manifest(out)
+    assert [a["id"] for a in doc["assets"]] == ["la1:obj063_01"]
+    asset = doc["assets"][0]
+    assert asset["has_alpha"] is False
+    assert Image.open(out / asset["path"]).mode == "RGB"
 
 
 def test_akos_cdat_cel_255_is_rgba_with_alpha(tmp_path):

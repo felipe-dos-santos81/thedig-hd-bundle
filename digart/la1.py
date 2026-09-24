@@ -55,6 +55,10 @@ class La1Bitmap:
     height: int
     palette: bytes
     transparent0: bool
+    # The decoder's transparent colour index, or None for an opaque bitmap:
+    # 0 for a transparent SMAP strip (RMIM/OBIM), 255 for a BOMP OBIM object
+    # sprite. ``transparent0`` remains the oracle's per-strip flag.
+    transparent: int | None
 
 
 def _be32(data: bytes, off: int) -> int:
@@ -353,7 +357,8 @@ def _decode_smap(data: bytes, smap: int, w: int, h: int, palette: bytes,
             return None
         if _decompress_bitmap(buf, s * 8, w, data, smap + off, h, transparent_color):
             transp = True
-    return La1Bitmap(name, bytes(buf), w, h, palette, transp)
+    return La1Bitmap(name, bytes(buf), w, h, palette, transp,
+                     0 if transp else None)
 
 
 def _decode_bomp(data: bytes, bomp: int, w: int, h: int, palette: bytes,
@@ -370,7 +375,7 @@ def _decode_bomp(data: bytes, bomp: int, w: int, h: int, palette: bytes,
     for y in range(bh):
         bomp_decode_line(buf, y * w, data, src + 2, bw, set_zero=True)
         src += _le16(data, src) + 2
-    return La1Bitmap(name, bytes(buf), w, h, palette, False)
+    return La1Bitmap(name, bytes(buf), w, h, palette, False, 255)
 
 
 def _process_room(data: bytes, room_off: int, room: int, errors: list,

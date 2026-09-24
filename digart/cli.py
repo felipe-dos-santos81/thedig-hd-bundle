@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .akos import iter_cels
 from .errors import DecodeError
-from .la1 import La1Bitmap, iter_bitmaps
+from .la1 import iter_bitmaps
 from .manifest import AssetRecord, ManifestBuilder, palette_hash, rec_id
 from .nut import iter_images
 from .pngout import write_indexed_png, write_san_png
@@ -208,20 +208,6 @@ def _write_bitmap(out: Path, rel: Path, index: bytes, width: int, height: int,
     return palette, True
 
 
-def _la1_transparent_index(bmp: La1Bitmap) -> int | None:
-    """Transparent colour index of a DIG.LA1 bitmap, or ``None`` when opaque.
-
-    ``OBIM`` object sprites carry index 0 as transparent (both the SMAP and BOMP
-    variants); ``RMIM`` room backdrops are opaque unless their SMAP strip codec
-    was a transparent variant, in which case index 0 is transparent too. The
-    names are the decoder's contract (``digart.la1._process_room``): ``room<NNN>``
-    for RMIM, ``obj<NNN>_<state>`` for OBIM.
-    """
-    if bmp.name.startswith("obj"):
-        return 0
-    return 0 if bmp.transparent0 else None
-
-
 def _extract_nut(data: bytes, source: str, stem: str, out: Path,
                  records: list[dict], errors: list[dict]) -> None:
     for i, img in enumerate(_stream(iter_images(data, source), errors)):
@@ -237,9 +223,11 @@ def _extract_la1(la0: bytes, la1: bytes, source: str, out: Path,
     local: list[DecodeError] = []
     for bmp in _stream(iter_bitmaps(la0, la1, local, source), errors):
         rel = Path("la1") / f"{bmp.name}.png"
+        # bmp.transparent is the decoder's index: 0 for a transparent SMAP
+        # strip, 255 for a BOMP OBIM sprite, None for an opaque backdrop.
         palette, has_alpha = _write_bitmap(out, rel, bmp.index, bmp.width,
                                            bmp.height, bmp.palette,
-                                           _la1_transparent_index(bmp))
+                                           bmp.transparent)
         records.append(_record("la1", source, None, bmp.name, bmp.width,
                                bmp.height, has_alpha, palette, rel))
     errors.extend(e.to_dict() for e in local)
