@@ -14,6 +14,17 @@
 // Codec 1 -> Scumm::smushDecodeRLE (vendored codec1.cpp); codec 44 -> the
 // sed-extracted nut_codec21 body. Exit 2 + stderr message on a malformed
 // stream or unknown codec.
+//
+// `san-oracle la1 FILE` writes one record per DIG.LA1 SMAP/BOMP bitmap.
+//
+// `san-oracle akos FILE` walks the same DIG.LA1 room container and writes one
+// record per costume cel, in file order:
+//   b"AKOS" + u32LE(costume) + u16LE(cel) + u16LE(w) + u16LE(h) +
+//   u8 transparent + index[w*h]
+// The costume id is the 1-based file-order ordinal (equal to the DIG.LA0
+// rtCostume id). Cels are decoded by the transcribed codecs (1 Byle RLE,
+// 5 CDAT/BOMP, 16 MajMin); an unknown codec emits a fixed-size AKOSE record
+// (b"AKOSE" + u32LE(costume) + u16LE(cel) + u16LE(codec)) instead of error().
 
 #include "shim.h"
 #include "scumm/smush/codec37.h"
@@ -25,6 +36,9 @@ void bompDecodeLine(byte *dst, const byte *src, int len, bool setZero);
 void nut_codec21(byte *dst, const byte *src, int width, int height, int pitch);
 int la1_decompress_strip(byte *dst, int dstPitch, const byte *src, int height, byte transparentColor);
 int la1_codec_supported(uint8 code);
+int akos_decode_byle(byte *dst, int w, int h, const byte *src, int numColors);
+int akos_decode_cdat(byte *dst, int w, int h, const byte *src);
+int akos_decode_majmin(byte *dst, int w, int h, const byte *src);
 
 namespace {
 
@@ -472,12 +486,150 @@ void runLa1(const uint8 *data, long n, const char *path) {
 	}
 }
 
+// ── AKOS (SCUMM v7 costume cels) ───────────────────────────────────────────
+//
+// Each room's AKOS chunk is one costume resource whose payload is a chunk list
+// (AKHD, AKPL, RGBS, AKSQ, AKCH, AKOF, AKCI, AKCD). The cel tables are read
+// exactly as AkosRenderer::setCostume/drawLimb do: AKHD carries celsCount and
+// celCompressionCodec; AKOF is an array of { u32 akcd; u16 akci } (6 bytes);
+// the cel's width/height are the first two u16 of AKCI at akci; the cel data is
+// AKCD + akcd. Only the cel pixel decode is performed (codecs 1 Byle RLE,
+// 5 CDAT/BOMP, 16 MajMin); an unknown codec emits an AKOSE record. The costume
+// id is the 1-based file-order ordinal, which equals the DIG.LA0 rtCostume id
+// (the DCOS table's 331 non-zero entries map one-to-one onto the AKOS chunks in
+// this order).
+
+const uint8 kAkosTransparentByle = 0;
+const uint8 kAkosTransparentBomp = 255;
+
+void emitAkosCel(uint32 costume, uint16 cel, int w, int h, uint8 transparent, const uint8 *idx) {
+	fwrite("AKOS", 1, 4, stdout);
+	uint8 hdr[11];
+	hdr[0] = (uint8)(costume & 0xff);
+	hdr[1] = (uint8)((costume >> 8) & 0xff);
+	hdr[2] = (uint8)((costume >> 16) & 0xff);
+	hdr[3] = (uint8)((costume >> 24) & 0xff);
+	hdr[4] = (uint8)(cel & 0xff);
+	hdr[5] = (uint8)((cel >> 8) & 0xff);
+	hdr[6] = (uint8)(w & 0xff);
+	hdr[7] = (uint8)((w >> 8) & 0xff);
+	hdr[8] = (uint8)(h & 0xff);
+	hdr[9] = (uint8)((h >> 8) & 0xff);
+	hdr[10] = transparent;
+	fwrite(hdr, 1, sizeof(hdr), stdout);
+	fwrite(idx, 1, (size_t)w * h, stdout);
+}
+
+void emitAkosError(uint32 costume, uint16 cel, uint16 codec) {
+	fwrite("AKOSE", 1, 5, stdout);
+	uint8 b[8];
+	b[0] = (uint8)(costume & 0xff);
+	b[1] = (uint8)((costume >> 8) & 0xff);
+	b[2] = (uint8)((costume >> 16) & 0xff);
+	b[3] = (uint8)((costume >> 24) & 0xff);
+	b[4] = (uint8)(cel & 0xff);
+	b[5] = (uint8)((cel >> 8) & 0xff);
+	b[6] = (uint8)(codec & 0xff);
+	b[7] = (uint8)((codec >> 8) & 0xff);
+	fwrite(b, 1, sizeof(b), stdout);
+}
+
+void akos_process_costume(const uint8 *akos, uint32 costume) {
+	uint32 akosSize = READ_BE_UINT32(akos + 4);
+	const uint8 *akhd = la1_find_child(akos, akosSize, "AKHD");
+	const uint8 *akof = la1_find_child(akos, akosSize, "AKOF");
+	const uint8 *akci = la1_find_child(akos, akosSize, "AKCI");
+	const uint8 *akcd = la1_find_child(akos, akosSize, "AKCD");
+	const uint8 *akpl = la1_find_child(akos, akosSize, "AKPL");
+	if (!akhd || !akof || !akci || !akcd)
+		return;
+	uint16 cels = READ_LE_UINT16(akhd + 8 + 6);
+	uint16 codec = READ_LE_UINT16(akhd + 8 + 8);
+	int numColors = akpl ? (int)READ_BE_UINT32(akpl + 4) - 8 : 0;
+
+	for (uint16 i = 0; i < cels; ++i) {
+		uint32 akcdOff = READ_LE_UINT32(akof + 8 + 6 * i);
+		uint16 akciOff = READ_LE_UINT16(akof + 8 + 6 * i + 4);
+		int w = READ_LE_UINT16(akci + 8 + akciOff);
+		int h = READ_LE_UINT16(akci + 8 + akciOff + 2);
+		if (w <= 0 || h <= 0 || (codec != 1 && codec != 5 && codec != 16)) {
+			emitAkosError(costume, i, codec);
+			continue;
+		}
+		size_t np = (size_t)w * h;
+		uint8 *idx = (uint8 *)malloc(np);
+		if (!idx)
+			error("out of memory");
+		uint8 transparent = (codec == 1) ? kAkosTransparentByle : kAkosTransparentBomp;
+		memset(idx, transparent, np);
+		const uint8 *src = akcd + 8 + akcdOff;
+		if (codec == 1)
+			akos_decode_byle(idx, w, h, src, numColors);
+		else if (codec == 5)
+			akos_decode_cdat(idx, w, h, src);
+		else
+			akos_decode_majmin(idx, w, h, src);
+		emitAkosCel(costume, i, w, h, transparent, idx);
+		free(idx);
+	}
+}
+
+void akos_process_room(const uint8 *data, uint32 roomOff, uint32 &costume) {
+	const uint8 *room = data + roomOff;
+	uint32 lflfOff = roomOff - 8;
+	const uint8 *lflfEnd = data + lflfOff + READ_BE_UINT32(data + lflfOff + 4);
+	const uint8 *c = room + 8;
+	while (c + 8 <= lflfEnd) {
+		if (!la1_is_tag(c))
+			break;
+		uint32 size = READ_BE_UINT32(c + 4);
+		if (size < 8 || c + size > lflfEnd)
+			break;
+		if (memcmp(c, "AKOS", 4) == 0) {
+			++costume;
+			akos_process_costume(c, costume);
+		}
+		c += size;
+	}
+}
+
+// runAkos: same LECF -> LOFF -> ROOM walk as runLa1; the costume ordinal is the
+// 1-based count of AKOS chunks in file order.
+//
+// The walk starts at the ROOM payload (ROOM + 8) and runs to the end of the
+// enclosing LFLF, exactly as the census does: ROOM's payload and the room's
+// other resources (SCRP/SOUN/AKOS, addressed by room-relative offsets) are
+// contiguous, so the two form one flat chunk list. AKOS lives after the ROOM
+// chunk (it is a room resource, not a ROOM child), which is why this walk uses
+// the LFLF bound rather than ROOM's own size.
+void runAkos(const uint8 *data, long n, const char *path) {
+	if (n < 16 || memcmp(data, "LECF", 4) != 0)
+		error("missing LECF magic in %s", path);
+	uint32 lecfSize = READ_BE_UINT32(data + 4);
+	if ((long)lecfSize > n)
+		error("LECF size %u overruns file in %s", lecfSize, path);
+	if (memcmp(data + 8, "LOFF", 4) != 0)
+		error("missing LOFF chunk in %s", path);
+
+	const uint8 *loff = data + 16;
+	uint8 count = loff[0];
+	uint32 costume = 0;
+	for (int i = 0; i < count; ++i) {
+		uint32 roomOff = READ_LE_UINT32(loff + 2 + 5 * i);
+		if (roomOff < 8 || roomOff + 8 > (uint32)n)
+			error("room %d offset %u out of range in %s", i + 1, roomOff, path);
+		if (memcmp(data + roomOff, "ROOM", 4) != 0)
+			error("room %d at %u is not ROOM in %s", i + 1, roomOff, path);
+		akos_process_room(data, roomOff, costume);
+	}
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
 	if (argc != 3 || (strcmp(argv[1], "dump") != 0 && strcmp(argv[1], "nut") != 0 &&
-					  strcmp(argv[1], "la1") != 0)) {
-		fprintf(stderr, "usage: san-oracle {dump|nut|la1} FILE\n");
+					  strcmp(argv[1], "la1") != 0 && strcmp(argv[1], "akos") != 0)) {
+		fprintf(stderr, "usage: san-oracle {dump|nut|la1|akos} FILE\n");
 		return 2;
 	}
 
@@ -501,8 +653,10 @@ int main(int argc, char **argv) {
 		runDump(data, n, argv[2]);
 	else if (strcmp(argv[1], "nut") == 0)
 		runNut(data, n, argv[2]);
-	else
+	else if (strcmp(argv[1], "la1") == 0)
 		runLa1(data, n, argv[2]);
+	else
+		runAkos(data, n, argv[2]);
 
 	free(data);
 	return 0;

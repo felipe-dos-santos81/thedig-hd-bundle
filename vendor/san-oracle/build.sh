@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-# bompDecodeLine as a standalone TU: verbatim upstream body, wrapped in the
-# namespace its own header declares it in (scumm/bomp.h: namespace Scumm).
+# BOMP decode primitives as a standalone TU: verbatim upstream bodies, wrapped
+# in the namespace its own header declares them in (scumm/bomp.h: namespace
+# Scumm). bompDecodeLine serves the LA1 BOMP object images and the AKOS CDAT
+# costume cels; decompressBomp is the full BOMP bitmap decode; bompApplyMask /
+# bompApplyShadow are the (no-op under a zero mask, shadow mode 0) pixel commit
+# used by the AKOS MajMin cel decoder. Helpers are emitted before the dispatcher
+# that calls them so no forward declarations are needed.
 {
   printf '#include "shim.h"\n'
   printf '#include "scumm/bomp.h"\n'
   printf 'namespace Scumm {\n'
   awk '/^void bompDecodeLine\(byte \*dst, const byte \*src, int len, bool setZero\)/,/^}/' upstream/engines/scumm/bomp.cpp
+  awk '/^void decompressBomp\(byte \*dst, const byte \*src, int w, int h\)/,/^}/' upstream/engines/scumm/bomp.cpp
+  awk '/^void bompApplyMask\(byte \*line_buffer, byte \*mask, byte maskbit, int32 size, byte transparency\)/,/^}/' upstream/engines/scumm/bomp.cpp
+  awk '/^void bompApplyShadow0\(/,/^}/' upstream/engines/scumm/bomp.cpp
+  awk '/^void bompApplyShadow1\(/,/^}/' upstream/engines/scumm/bomp.cpp
+  awk '/^void bompApplyShadow3\(/,/^}/' upstream/engines/scumm/bomp.cpp
+  awk '/^void bompApplyShadow\(int shadowMode, const byte \*shadowPalette, const byte \*line_buffer, byte \*dst, int32 size, byte transparency, bool HE7Check\)/,/^}/' upstream/engines/scumm/bomp.cpp
   printf '} // namespace Scumm\n'
 } > bomp_core.cpp
 grep -q 'setZero' bomp_core.cpp || { echo "bomp extraction failed" >&2; exit 1; }
+grep -q 'decompressBomp' bomp_core.cpp || { echo "bomp decompressBomp extraction failed" >&2; exit 1; }
+grep -q 'bompApplyShadow3' bomp_core.cpp || { echo "bomp shadow extraction failed" >&2; exit 1; }
 # NutRenderer::codec21 body (verbatim statements) wrapped in a free function.
 # The body is lines 66-93 of nut_renderer.cpp; only the signature differs.
 {
@@ -29,6 +42,7 @@ grep -q 'dstPtrNext' nut_core.cpp || { echo "codec21 extraction failed" >&2; exi
 {
   cat <<'LA1_PREAMBLE'
 #include "shim.h"
+#include "majmin_codec.h"
 typedef unsigned int uint;
 namespace Common { enum { kPlatformAmiga = 42 }; }
 #define GF_16COLOR (1 << 4)
@@ -100,25 +114,6 @@ struct La1EngineShim { int _bytesPerPixel; La1GameShim _game; };
 
 static byte g_la1RoomPalette[256];
 static La1EngineShim g_la1Engine;
-
-class MajMinCodec {
-public:
-	struct {
-		bool repeatMode;
-		int repeatCount;
-		byte color;
-		byte shift;
-		uint16 bits;
-		byte numBits;
-		const byte *dataPtr;
-		byte buffer[336];
-	} _majMinData;
-
-	void setupBitReader(byte shift, const byte *src);
-	void skipData(int32 numSkip);
-	void decodeLine(byte *buf, int32 numBytes, int32 dir);
-	inline byte readBits(byte n);
-};
 
 class Gdi {
 public:
@@ -243,9 +238,209 @@ LA1_EPILOG
 } > la1_core.cpp
 grep -q 'la1_decompress_strip' la1_core.cpp || { echo "la1 extraction failed" >&2; exit 1; }
 grep -q 'MajMinCodec::decodeLine' la1_core.cpp || { echo "la1 MajMinCodec extraction failed" >&2; exit 1; }
-# bomp_core.cpp + nut_core.cpp + la1_core.cpp + codec1.cpp + codec37.cpp verbatim + oracle_main.cpp
+# AKOS costume cel decode: the pixel decoders only (the renderer's drawing,
+# clipping, palette and shadow application are not transcribed). The Byle RLE
+# body comes from base-costume.cpp, the MajMin body from akos.cpp; both are
+# wrapped in the minimal BaseCostumeRenderer/AkosRenderer shims that supply the
+# members and engine constants the bodies reference. The Dig is SCUMM v7 VGA:
+# heversion 0, features 0, bytesPerPixel 1, and the actor palette is the
+# identity map, so the decoded buffers hold the raw costume colour indices.
+{
+  cat <<'AKOS_PREAMBLE'
+#include "shim.h"
+#include "majmin_codec.h"
+#include "scumm/bomp.h"
+
+namespace Common {
+struct Rect { int16 left, top, right, bottom; };
+}
+
+namespace Scumm {
+
+/* Engine shim: The Dig is SCUMM v7 VGA (heversion 0, features 0, version 7,
+   bytesPerPixel 1). getMaskBuffer hands back a caller-supplied zeroed buffer so
+   the cel decoders' mask test is a no-op: only the cel pixels are decoded, not
+   the on-screen mask. */
+struct AkosGameShim { uint32 features; int heversion; int version; };
+struct AkosEngineShim {
+	AkosGameShim _game;
+	int _bytesPerPixel;
+	byte *_maskBuf;
+	byte *getMaskBuffer(int x, int y, int z) { (void)x; (void)y; (void)z; return _maskBuf; }
+};
+
+static AkosEngineShim g_akosEngine = { { 0, 0, 7 }, 1, nullptr };
+
+/* Destination surface shim: only the members the transcribed decoders touch. */
+struct AkosSurface {
+	int w, h, pitch;
+	byte *base;
+	byte *getBasePtr(int x, int y) { return base + (size_t)y * pitch + x; }
+};
+
+#define GF_16BIT_COLOR (1 << 0)
+#define READ_UINT16(p) READ_LE_UINT16(p)
+#define WRITE_UINT16(p, v) do { (p)[0] = (byte)((v) & 0xff); (p)[1] = (byte)(((v) >> 8) & 0xff); } while (0)
+#define revBitMask(x) (0x80 >> (x))
+
+class BaseCostumeRenderer {
+public:
+	struct ByleRLEData {
+		int x;
+		int y;
+		const byte *scaleTable;
+		int skipWidth;
+		byte *destPtr;
+		const byte *maskPtr;
+		int scaleXStep;
+		byte mask, shr;
+		byte repColor;
+		byte repLen;
+		Common::Rect boundsRect;
+		int scaleXIndex, scaleYIndex;
+		int scaleIndexMask;
+	};
+
+	AkosEngineShim *_vm;
+	byte _shadowMode;
+	byte *_shadowTable;
+	AkosSurface _out;
+	int32 _numStrips;
+	const byte *_srcPtr;
+	bool _drawActorToRight;
+	bool _akosRendering;
+	int _width, _height;
+	int _drawTop, _drawBottom;
+	uint16 _palette[256];
+	byte _scaleX, _scaleY;
+
+	byte paintCelByleRLECommon(
+		int xMoveCur,
+		int yMoveCur,
+		int numColors,
+		int scaletableSize,
+		bool amiOrPcEngCost,
+		bool c64Cost,
+		ByleRLEData &compData,
+		bool &decode);
+
+	void byleRLEDecode(ByleRLEData &compData, int16 actorHitX = 0, int16 actorHitY = 0, bool *actorHitResult = nullptr, const uint8 *xmap = nullptr);
+	void skipCelLines(ByleRLEData &compData, int num);
+
+	virtual void markAsDirty(const Common::Rect &rect, ByleRLEData &compData, bool &decode) { (void)rect; (void)compData; (void)decode; }
+};
+
+class AkosRenderer : public BaseCostumeRenderer {
+public:
+	void majMinCodecDecompress(byte *dest, int32 pitch, const byte *src, int32 width, int32 height, int32 dir,
+		int32 numSkipBefore, int32 numSkipAfter, byte transparency, int maskLeft, int maskTop, int zBuf);
+};
+
+/* bigCostumeScaleTable (akos.cpp:499), verbatim. */
+AKOS_PREAMBLE
+  awk '/^const byte bigCostumeScaleTable\[768\] = \{/,/^\};/' upstream/engines/scumm/akos.cpp
+  awk '/^byte BaseCostumeRenderer::paintCelByleRLECommon\(/,/^}/' upstream/engines/scumm/base-costume.cpp
+  awk '/^void BaseCostumeRenderer::byleRLEDecode\(/,/^}/' upstream/engines/scumm/base-costume.cpp
+  awk '/^void BaseCostumeRenderer::skipCelLines\(/,/^}/' upstream/engines/scumm/base-costume.cpp
+  awk '/^void AkosRenderer::majMinCodecDecompress\(/,/^}/' upstream/engines/scumm/akos.cpp
+  cat <<'AKOS_EPILOG'
+} // namespace Scumm
+
+/* The Dig is v7 VGA: heversion 0, features 0, bytesPerPixel 1. */
+static void akos_engine_init(Scumm::AkosEngineShim *vm, byte *maskBuf) {
+	vm->_game.features = 0;
+	vm->_game.heversion = 0;
+	vm->_game.version = 7;
+	vm->_bytesPerPixel = 1;
+	vm->_maskBuf = maskBuf;
+}
+
+/* AKOS_BYLE_RLE_CODEC (1): the cel is a Byle RLE stream. `numColors` is the
+   AKPL data size; the cel is decoded unscaled, unmasked, unshadowed and with an
+   identity actor palette, so the destination receives the raw colour indices.
+   The destination is pre-filled with 0 (the codec's transparent index). */
+int akos_decode_byle(byte *dst, int w, int h, const byte *src, int numColors) {
+	size_t msz = (size_t)w * h + 64;
+	byte *maskBuf = (byte *)calloc(msz, 1);
+	if (!maskBuf)
+		error("out of memory");
+	akos_engine_init(&Scumm::g_akosEngine, maskBuf);
+
+	Scumm::AkosRenderer r;
+	r._vm = &Scumm::g_akosEngine;
+	r._width = w;
+	r._height = h;
+	r._out.w = w;
+	r._out.h = h;
+	r._out.pitch = w;
+	r._out.base = dst;
+	r._scaleX = 255;
+	r._scaleY = 255;
+	r._drawActorToRight = true;
+	r._akosRendering = true;
+	r._srcPtr = src;
+	r._drawTop = 0x7fff;
+	r._drawBottom = 0;
+	r._shadowMode = 0;
+	r._shadowTable = nullptr;
+	r._numStrips = w;
+	for (int i = 0; i < 256; ++i)
+		r._palette[i] = (uint16)i;
+
+	Scumm::BaseCostumeRenderer::ByleRLEData compData;
+	compData.scaleTable = Scumm::bigCostumeScaleTable;
+	compData.x = 0;
+	compData.y = 0;
+	compData.scaleIndexMask = -1;
+
+	bool decode = true;
+	r.paintCelByleRLECommon(0, 0, numColors, 384, false, false, compData, decode);
+	if (decode) {
+		compData.maskPtr = r._vm->getMaskBuffer(0, 0, 0);
+		r.byleRLEDecode(compData, 0, 0, nullptr, nullptr);
+	}
+	free(maskBuf);
+	return decode ? 1 : 0;
+}
+
+/* AKOS_CDAT_RLE_CODEC (5): the cel is a BOMP bitmap (upstream
+   AkosRenderer::paintCelCDATRLE -> drawBomp at 1:1 with no mask/shadow/palette
+   reduces to decompressBomp). The destination is pre-filled with 255 (the
+   codec's transparent index). */
+int akos_decode_cdat(byte *dst, int w, int h, const byte *src) {
+	Scumm::decompressBomp(dst, src, w, h);
+	return 1;
+}
+
+/* AKOS_RUN_MAJMIN_CODEC (16): the cel is a MajMin stream, decoded by the
+   transcribed AkosRenderer::majMinCodecDecompress. The mask is a no-op and
+   shadow mode is 0, so the destination receives the raw colour indices; the
+   destination is pre-filled with 255 (the codec's transparent index). */
+int akos_decode_majmin(byte *dst, int w, int h, const byte *src) {
+	size_t msz = (size_t)w * h + 64;
+	byte *maskBuf = (byte *)calloc(msz, 1);
+	if (!maskBuf)
+		error("out of memory");
+	akos_engine_init(&Scumm::g_akosEngine, maskBuf);
+
+	Scumm::AkosRenderer r;
+	r._vm = &Scumm::g_akosEngine;
+	r._numStrips = w;
+	r._shadowMode = 0;
+	r._shadowTable = nullptr;
+	r.majMinCodecDecompress(dst, w, src, w, h, 1, 0, 0, 255, 0, 0, 0);
+	free(maskBuf);
+	return 1;
+}
+AKOS_EPILOG
+} > akos_core.cpp
+grep -q 'bigCostumeScaleTable' akos_core.cpp || { echo "akos scale table extraction failed" >&2; exit 1; }
+grep -q 'BaseCostumeRenderer::byleRLEDecode' akos_core.cpp || { echo "akos byle extraction failed" >&2; exit 1; }
+grep -q 'AkosRenderer::majMinCodecDecompress' akos_core.cpp || { echo "akos majmin extraction failed" >&2; exit 1; }
+# bomp_core.cpp + nut_core.cpp + la1_core.cpp + akos_core.cpp + codec1.cpp +
+# codec37.cpp verbatim + oracle_main.cpp
 clang++ -O1 -w -std=c++17 -I upstream/engines -I inc -lz \
-  -o san-oracle bomp_core.cpp nut_core.cpp la1_core.cpp \
+  -o san-oracle bomp_core.cpp nut_core.cpp la1_core.cpp akos_core.cpp \
   upstream/engines/scumm/smush/codec1.cpp \
   upstream/engines/scumm/smush/codec37.cpp oracle_main.cpp
 echo built: vendor/san-oracle/san-oracle
