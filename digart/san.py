@@ -1,10 +1,15 @@
 import struct
+import warnings
+import zlib
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from .bomp import bomp_decode_line
 from .errors import DecodeError
 
 FRAME_W, FRAME_H = 320, 200
+
+_RAW_ZFOB_WARNED = False
 
 
 @dataclass(frozen=True)
@@ -86,11 +91,44 @@ class SanReader:
             if cmd == 512:
                 self.pal = bytearray(payload[4 + 1536:4 + 1536 + 768])
 
-    def _fobj(self, payload: bytes) -> None:      # implemented in Task 4
-        self._pending += 1
+    def _fobj(self, payload: bytes) -> None:
+        codec, left, top, w, h, _obj_id, _parm2 = struct.unpack_from("<HhhHHHH", payload, 0)
+        if h > FRAME_H or w > FRAME_W:
+            self.skipped["skip_big"] = self.skipped.get("skip_big", 0) + 1
+            return
+        if (h, w) != (FRAME_H, FRAME_W):
+            # Non-insane overlay objects are never displayed. The engine routes
+            # the objId 242 / 384-wide special case to a hidden buffer we
+            # deliberately do not expose.
+            self.skipped["skip_small"] = self.skipped.get("skip_small", 0) + 1
+            return
+        if codec in (1, 3):
+            p, k = top * FRAME_W + left, 14
+            for _ in range(h):
+                row_len = int.from_bytes(payload[k:k + 2], "little")
+                bomp_decode_line(self.buf, p, payload, k + 2, w, set_zero=False)
+                k += row_len + 2
+                p += FRAME_W
+        elif codec == 20:
+            p, k = left * FRAME_W + top, 14
+            for _ in range(h):
+                self.buf[p:p + w] = payload[k:k + w]
+                k += w
+                p += FRAME_W
+        else:
+            raise DecodeError(self.source, 0, f"unsupported codec {codec}")
 
-    def _zfb(self, payload: bytes) -> None:       # implemented in Task 4
-        self._pending += 1
+    def _zfb(self, payload: bytes) -> None:
+        global _RAW_ZFOB_WARNED
+        raw = payload[4:]
+        try:
+            data = zlib.decompress(raw)
+        except zlib.error:
+            if not _RAW_ZFOB_WARNED:
+                warnings.warn("ZFOB: raw deflate stream (no zlib header)", stacklevel=2)
+                _RAW_ZFOB_WARNED = True
+            data = zlib.decompressobj(-15).decompress(raw)
+        self._fobj(data)
 
 
 def iter_frames(data: bytes, source: str = "?") -> Iterator[SanFrame]:
