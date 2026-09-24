@@ -300,7 +300,7 @@ def bomp_decode_line(dst: bytearray, dst_off: int, src: bytes, src_off: int,
   - `SanFrame` frozen dataclass: `.index: bytes` (len 64000), `.palette: bytes` (len 768).
   - `iter_frames(data: bytes, source: str = "?") -> Iterator[SanFrame]`.
   - Module constants `FRAME_W = 320`, `FRAME_H = 200`.
-  - Raises `DecodeError` for malformed container. `SanReader.skipped: dict[str, int]` is public for diagnostics; `iter_frames` also exposes the reader via generator attribute — tests may construct `SanReader` directly for `skipped` inspection; `SanReader(data, source).frames()`.
+  - Raises `DecodeError` for malformed container. `SanReader.skipped: dict[str, int]` is public for diagnostics; tests may construct `SanReader` directly for `skipped` inspection; `SanReader(data, source).frames()`.
 
 Behavior (spec §4.1; upstream `smush_player.cpp` — follow exactly):
 - Container: `ANIM` + u32BE total; chunks are `tag(4) + u32BE payload-size + payload` (the size field is the **payload length**, excluding the 8-byte header); advance `off = chunk_start + 8 + size + (size & 1)` for every chunk including `AHDR`. Top-level unknown tag → `DecodeError`.
