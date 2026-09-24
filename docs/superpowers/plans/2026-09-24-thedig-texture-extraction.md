@@ -39,7 +39,8 @@ digart/manifest.py                 AssetRecord, ManifestBuilder, palette_hash
 digart/pngout.py                   deterministic PNG + palette-strip writers
 digart/cli.py                      extract/verify, preflight, --jobs orchestration
 tools/diff_oracle.py               python-vs-C++ differential over all .san files
-tools/la1_census.py                DIG.LA1 chunk-tag census (Task 8 Step 1)
+tools/diff_nut.py                  python-vs-C++ differential over all .nut files
+tools/la1_census.py                DIG.LA1 chunk-tag census (Task 9 Step 1)
 vendor/san-oracle/UPSTREAM.txt     pinned scummvm commit SHA + file hashes
 vendor/san-oracle/upstream/engines/scumm/{bomp.h,bomp.cpp,nut_renderer.cpp}   verbatim upstream
 vendor/san-oracle/upstream/engines/scumm/smush/{codec1.cpp,codec37.cpp,codec37.h,smush_player.cpp}
@@ -692,23 +693,53 @@ def rec_id(kind: str, source: str, frame: int) -> str:
 
 ---
 
-### Task 7: NUT glyph/icon extraction
+### Task 7: NUT oracle + differential harness
 
 **Files:**
-- Create: `digart/nut.py`, `tests/test_nut.py`; Modify: `tests/fixtures/make_fixtures.py` (add `mk_nut`), `vendor/san-oracle/UPSTREAM.txt` (nut_renderer.cpp already listed)
+- Modify: `vendor/san-oracle/oracle_main.cpp`, `vendor/san-oracle/build.sh`; Create: `tools/diff_nut.py`
 
 **Interfaces:**
-- Consumes: `bomp_decode_line`, `DecodeError`.
-- Produces: `NutImage(name: str, index: bytes, width: int, height: int, palette: bytes)`; `iter_images(data: bytes, source: str) -> Iterator[NutImage]`. `name = f"{Path(source).stem.lower()}:{i:03d}"`. Index 0 = transparent (decided by writer).
+- Produces: `vendor/san-oracle/san-oracle nut FILE` → stdout stream of records `b"NUTG" + u16LE(w,h) + u8 transparency + pal[768] + index[w*h]`, one per glyph in file order. Exit 2 + stderr on malformed stream / unknown codec.
+- The oracle compiles the vendored upstream `codec1.cpp` verbatim and the extracted `codec21` body verbatim.
 
-- [ ] **Step 0: Read the vendored truth.** Open `vendor/san-oracle/upstream/engines/scumm/nut_renderer.cpp`, function `loadFont` (and `NutRenderer::codec1` / `codec21` just below it). The port is a *transcription*, not a reinterpretation: chunk pre-scan strides, `READ_LE_UINT16(dataSrc + offset + 14/+16)` glyph geometry, FRME payload → `FOBJ`-style rows, `smushDecodeRLE` into a glyph-sized buffer with pitch = glyph width (font path has NO screen-size guard). Glyph codec is 1 (BOMP rows) or 21; implement `nut_codec21` as given in this plan's appendix note below. Palette: NUT files carry the same AHDR 768-byte palette at payload[6:774] as SAN.
-- [ ] **Step 1: Fixture + failing tests**: `mk_nut(num_chars=2, glyphs=[(8,8,index0bytes),(16,6,...)])` building AHDR(numChars@+2) + per-glyph `be(b"???", meta)` + `be(b"FRME", be(b"FOBJ", hdr+rows))` shapes matching the transcribed stride; assert `width/height` + first pixel + palette bytes. `@pytest.mark.game` test: `iter_images(FONT0.NUT.read_bytes())` yields ≥1 image, `all(0 < im.width and im.height)`.
-- [ ] **Step 2: Implement `digart/nut.py`** per Step 0 transcription (raise `DecodeError` on stride desync).
-- [ ] **Step 3: PASS + commit** `"feat: NUT glyph/icon extraction"`.
+**Verified NUT facts** (controller-verified across all 6 `.NUT` files):
+- Layout: `ANIM` (u32BE length; the payload after the 8-byte header is the font data) → `AHDR` (palette at payload[6:774]; `numChars` = u16LE@10) → **one `FRME` per glyph, each containing exactly one `FOBJ`**. There is **no metadata chunk**. The FOBJ header carries the geometry, all LE relative to the FOBJ chunk start: `codec` u16LE@+8, `xoffs` i16LE@+10, `yoffs` i16LE@+12, `width` u16LE@+14, `height` u16LE@+16, glyph data at `+22`.
+- Glyph counts equal `numChars`: FONT0-3 = 234 each, BIGFONT = 233, SMLFONT = 234 (1403 total).
+- Codecs: `1` (BIGFONT) and `44` (the other five). Codec `21` never occurs; codec 44 is decoded by the `codec21` routine.
+- Transparency: the glyph buffer is `memset` to `kDefaultTransparentColor = 0` for codec 1 and `kSmush44TransparentColor = 2` for codec 44 before decoding (`nut_renderer.h:37-38`).
+- `NutRenderer::codec1` = `smushDecodeRLE(dst, src, 0, 0, width, height, pitch=width)` (`nut_renderer.cpp:61-63`); `codec21` is the self-contained routine at `nut_renderer.cpp:65-94`.
+
+- [ ] **Step 1: Extend the build.** Add the vendored `upstream/engines/scumm/smush/codec1.cpp` to the `clang++` line in `build.sh` (it includes `common/endian.h` + `scumm/bomp.h`, both already shimmed). sed-extract the `codec21` method body (`nut_renderer.cpp:65-94`) into a free function `nut_codec21(byte *dst, const byte *src, int width, int height, int pitch)` — the body is verbatim; only the enclosing signature differs.
+- [ ] **Step 2: Add the `nut` mode to `oracle_main.cpp`.** Parse `ANIM`→`AHDR`→per-glyph `FRME`/`FOBJ` per the verified layout; per glyph `memset` the buffer to the codec's transparent index, dispatch codec 1 → `smushDecodeRLE(dst, data, 0, 0, w, h, w)` and codec 44 → `nut_codec21(dst, data, w, h, w)`; emit `NUTG` + w,h + transparency + palette + glyph bytes. Unknown codec → `error(...)`.
+- [ ] **Step 3: `tools/diff_nut.py`** — for each of the 6 real `.NUT` files, compare `san-oracle nut` records against `digart.nut.iter_images` (Task 8); same shape as `tools/diff_oracle.py`; exit 1 on any mismatch. It fails until Task 8 — do not weaken it.
+- [ ] **Step 4: Gate.** `make check` green; `san-oracle nut` exits 0 on all 6 files and emits 1403 records total. Commit `"chore: extend oracle with NUT glyph differential"`.
 
 ---
 
-### Task 8: SCUMM v7 LA1 bitmaps
+### Task 8: NUT glyph/icon extraction + 6/6 differential
+
+**Files:**
+- Create: `digart/nut.py`, `tests/test_nut.py`; Modify: `tests/fixtures/make_fixtures.py` (add `mk_nut`), `Makefile` (run the NUT differential in `verify`)
+
+**Interfaces:**
+- Consumes: `bomp_decode_line`, `DecodeError`, the vendored `nut_renderer.cpp`, the `san-oracle nut` records.
+- Produces:
+  - `NutImage(name: str, index: bytes, width: int, height: int, palette: bytes, transparent: int)` — `transparent` is the index that maps to alpha 0 (`0` for codec 1, `2` for codec 44).
+  - `iter_images(data: bytes, source: str) -> Iterator[NutImage]`; `name = f"{Path(source).stem.lower()}:{i:03d}"`.
+
+Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored file):
+- Walk `ANIM` → `AHDR` → per-glyph `FRME`/`FOBJ` per the Task 7 layout; `palette = ahdr_payload[6:774]`; raise `DecodeError` on stride desync.
+- Per glyph: `buf = bytearray(w*h)` memset to the transparency index; codec 1 → a local `smush_decode_rle(buf, data, w, h, pitch=w)` port of the vendored `smushDecodeRLE` (per row: `bomp_decode_line(buf, row, src, 2, w, set_zero=False)`; `src += u16LE(src) + 2`); codec 44 → `nut_codec21(buf, data, w, h, w)` ported from the vendored `codec21` (note: `dst += offs`, then copy `w` bytes — **not** `offs * pitch`).
+- Unknown codec → `DecodeError`.
+
+- [ ] **Step 1: Fixture + failing tests.** `mk_nut(glyphs=[(codec, w, h, payload), ...])` building `ANIM`+`AHDR`+one `FRME(FOBJ)` per glyph (no metadata chunk), with `numChars` at AHDR+10 and the palette at payload[6:774]. Assert width/height/palette/transparent and decoded pixels for a hermetic codec-1 and codec-44 glyph.
+- [ ] **Step 2: Implement `digart/nut.py`** per the rules above.
+- [ ] **Step 3:** `make check` green; add `$(PYTHON) tools/diff_nut.py` to the `verify` target; `make verify` → **6/6 identical, 0 byte mismatches** (plus 55/55 SAN). The oracle is authoritative — fix `digart/nut.py`, never the oracle.
+- [ ] **Step 4: Commit** `"feat: NUT glyph/icon extraction; 6/6 byte-exact vs oracle"`.
+
+---
+
+### Task 9: SCUMM v7 LA1 bitmaps
 
 **Files:**
 - Create: `tools/la1_census.py`, `docs/la1-census.txt`, `digart/la1.py`, `tests/test_la1.py`
@@ -724,7 +755,7 @@ def rec_id(kind: str, source: str, frame: int) -> str:
 
 ---
 
-### Task 9: CLI wiring, end-to-end, proofs
+### Task 10: CLI wiring, end-to-end, proofs
 
 **Files:**
 - Create: `digart/cli.py`, `tests/test_cli.py`; Modify: `README.md`, `docs/proofs/`
@@ -733,26 +764,26 @@ def rec_id(kind: str, source: str, frame: int) -> str:
 - Consumes: `iter_frames`, `iter_images`, `iter_bitmaps`, `ManifestBuilder`, `rec_id`, `write_*_png`, `DecodeError`, `palette_hash`.
 - Produces: `main(argv: list[str] | None = None) -> int`; exit 0/1/2 per spec §6.
 
-- [ ] **Step 1: Implement `cli.py`**: argparse; `GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")`; `extract`: preflight (required relative paths under `Contents/Resources/game/game`: `VIDEO/`, `DIG.LA0`, `DIG.LA1`; missing → print list, exit 2; disk: `shutil.disk_usage(out).free` vs `(15 if san else 0 + 1) << 30`, `--force` bypasses); build task list from `--only`; `ProcessPoolExecutor(max_workers=--jobs or min(4, os.cpu_count()))` mapping each file `_extract_one(path, out) -> tuple[list[dict], list[dict]]` — worker opens the file **read-only** with `Path.read_bytes`, decodes, writes PNGs under `out/<kind>/<STEM>/`, returns manifest dicts + `to_dict()` errors; parent merges (sorted by `(source, index)`), `ManifestBuilder.finalize`, `_errors.json` only when non-empty, prints summary. `verify`: `import tools.diff_oracle` main via importlib path (or `subprocess` with `sys.executable`) — exit its code.
+- [ ] **Step 1: Implement `cli.py`**: argparse; `GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")`; `extract`: preflight (required relative paths under `Contents/Resources/game/game`: `VIDEO/`, `DIG.LA0`, `DIG.LA1`; missing → print list, exit 2; disk: `shutil.disk_usage(out).free` vs `(15 if san else 0 + 1) << 30`, `--force` bypasses); build task list from `--only`; `ProcessPoolExecutor(max_workers=--jobs or min(4, os.cpu_count()))` mapping each file `_extract_one(path, out) -> tuple[list[dict], list[dict]]` — worker opens the file **read-only** with `Path.read_bytes`, decodes, writes PNGs under `out/<kind>/<STEM>/`, returns manifest dicts + `to_dict()` errors; parent merges (sorted by `(source, index)`), `ManifestBuilder.finalize`, `_errors.json` only when non-empty, prints summary. `verify`: run both differentials (`tools/diff_oracle.py`, `tools/diff_nut.py`) — exit non-zero on any mismatch.
 - [ ] **Step 2: Failing tests** `tests/test_cli.py`: fake-game dir (tmp_path with synthetic 2-frame SAN + synthetic .nut built by fixtures, plus empty `DIG.LA0/LA1` placeholders that yield zero bitmaps and zero errors); `main(["extract", "--game", fake_app, "--out", str(out), "--jobs", "1"])` → 0; manifest ids + `san:sq1:00001` present + `verify`-absent ok. Missing bundle → 2, stderr mentions `VIDEO`. Errors fixture (truncated SAN bytes) → `_errors.json` + exit 1.
-- [ ] **Step 3:** `make check` green, then the real run: `make verify` → **55/55 identical** (required; iterate Tasks 3/4 Python if not). Then real `thedig-textures extract` on the user's bundle; report total frames/PNGs/bytes; commit nothing from `out/` (gitignored).
+- [ ] **Step 3:** `make check` green, then the real run: `make verify` → **55/55 SAN + 6/6 NUT identical** (required; iterate the Python ports if not). Then real `thedig-textures extract` on the user's bundle; report total frames/PNGs/bytes; commit nothing from `out/` (gitignored).
 - [ ] **Step 4: Proofs**: copy three first frames (`san/SQ1/00000.png`, `san/SQ10/00000.png`, `san/PIGOUT/00000.png`) into `docs/proofs/first-frames/`; write `docs/proofs/README.md` comparing to an in-game screenshot you take once (launch the game, pause on screen 1, macOS `cmd-shift-4` — or state the user-supplied screenshot path): document that HUD/dialogue text is a runtime overlay deliberately excluded; list which on-screen elements in the screenshot should match frame pixels (background art) vs overlay (text, cursor, item bar). Commit `"docs: first-frame proofs vs in-game screens"`.
 - [ ] **Step 5:** Finalize `README.md` (real commands + manifest schema pointer + regeneration handoff note). `git add -A && git commit -m "feat: end-to-end CLI with full-bundle verification"`.
 
 ---
 
-## Appendix — NUT codec21 (Task 7 transcription reference)
+## Appendix — NUT codec21 (Task 8 transcription reference)
 
 ```python
 def nut_codec21(buf, off, src, s_off, w, h, pitch):
     while h:
-        row_end = s_off + 2 + int.from_bytes(src[s_off:s_off + 2], "little")
+        row_next = s_off + 2 + int.from_bytes(src[s_off:s_off + 2], "little")
         s_off += 2
         length = w
         o = off
-        while length > 0:
+        while True:
             skip = int.from_bytes(src[s_off:s_off + 2], "little"); s_off += 2
-            o += skip * pitch; length -= skip
+            o += skip; length -= skip              # pixels, NOT skip * pitch
             if length <= 0:
                 break
             run = int.from_bytes(src[s_off:s_off + 2], "little") + 1; s_off += 2
@@ -760,13 +791,13 @@ def nut_codec21(buf, off, src, s_off, w, h, pitch):
             n = run if length >= 0 else run + length
             buf[o:o + n] = src[s_off:s_off + n]
             o += n; s_off += n
-        s_off = row_end; off += pitch; h -= 1
+        s_off = row_next; off += pitch; h -= 1
 ```
-Port `off`/`dst` cursor exactly from the vendored C (`NutRenderer::codec21`); this appendix is a reading aid, the vendored file is authoritative.
+The vendored `NutRenderer::codec21` (`nut_renderer.cpp:65-94`) is authoritative; this appendix is a reading aid. Note the skip advances by **pixels** (`o += skip`), not rows.
 
-## Plan Self-Review (re-checked after the codec-37 re-plan)
+## Plan Self-Review (re-checked after the codec-37 and NUT re-plans)
 
-- Spec coverage: §2→T9 preflight; §3→T3/T5 (SAN), T7 (NUT), T8 (LA1); §4→T2-T5, T7, T8 (format rules restated verbatim in each task); §5→T6 (+ ids via `rec_id`); §6→T9; §7→T4/T5 (oracle then port); §8→per-task test steps + T9 Step 3; §9→error paths in every module; §11→T9 disk preflight; §12→T9 Steps 3-4.
-- Verified against the bundle: all 12,637 `FOBJ` are codec 37; no codec 1/3/20, no `ZFOB`; all 14,959 `IACT` are audio-only; 12,638 `FRME` total. The plan's SAN path matches this (Tasks 4-5).
-- Placeholders: none — every code step carries real code or a real command with its expected result. Three steps deliberately instruct "transcribe the vendored function" instead of re-typing 100+ lines (T4 `oracle_main.cpp`, T5 `codec37.py`, T7 `nut.py`); the vendored file is the content.
-- Type consistency: `iter_frames(data, source)` (T3→T5→T9), `SanFrame.index/.palette` (T3→T6), `DeltaBlocksDecoder.decode(dst, src)` (T5), `san-oracle dump` FRMK records (T4→T5), `iter_images(data, source)` (T7→T9), `iter_bitmaps(la0, la1, errors)` (T8→T9), `AssetRecord`/`rec_id` (T6→T9), `DecodeError.to_dict` (T1→T6 `_errors.json`).
+- Spec coverage: §2→T10 preflight; §3→T3/T5 (SAN), T7/T8 (NUT), T9 (LA1); §4→T2-T5, T7/T8, T9 (format rules restated verbatim in each task); §5→T6 (+ ids via `rec_id`); §6→T10; §7→T4/T5 (SAN oracle→port), T7/T8 (NUT oracle→port); §8→per-task test steps + T10 Step 3; §9→error paths in every module; §11→T10 disk preflight; §12→T10 Steps 3-4.
+- Verified against the bundle: all 12,637 SAN `FOBJ` are codec 37 (no 1/3/20, no `ZFOB`); 12,638 `FRME`; all `IACT` audio-only. NUT = `AHDR` + one `FRME`/`FOBJ` per glyph (no metadata chunk); codecs 1 and 44; transparency 0/2 by codec; 1403 glyphs. The plan matches both.
+- Placeholders: none — every code step carries real code or a real command with its expected result. Steps that instruct "transcribe the vendored function" (T4 `oracle_main.cpp`, T5 `codec37.py`, T7 oracle `nut` mode, T8 `nut.py`) name the vendored file as the content.
+- Type consistency: `iter_frames(data, source)` (T3→T5→T10), `SanFrame.index/.palette` (T3→T6), `DeltaBlocksDecoder.decode(dst, src)` (T5), `san-oracle dump`/`nut` records (T4/T7→T5/T8), `NutImage.transparent` (T8→T10), `iter_bitmaps(la0, la1, errors)` (T9→T10), `AssetRecord`/`rec_id` (T6→T10), `DecodeError.to_dict` (T1→T6 `_errors.json`).

@@ -84,11 +84,16 @@ when the frame changed nothing. `digart/san.py` yields `(indexed_bytes, palette)
 frame; SAN output PNGs are opaque RGB (no alpha).
 
 ### 4.2 NUT
-LucasArts `.nut` = an SMUSH `ANIM`/`AHDR` container (glyph count = u16LE at AHDR+10)
-followed by two chunks per glyph: metadata (glyph width u16LE @+14, height u16LE @+16)
-and a `FRME` with the glyph pixels (row-BOMP `FOBJ`, codec 1/21/44), per ScummVM's
-`NutRenderer::loadFont`. Glyph/icon index 0 **is** the transparent color → each glyph is
-emitted as RGBA PNG.
+LucasArts `.nut` = an SMUSH `ANIM` container holding `AHDR` (glyph count = u16LE@10;
+768-byte palette at payload[6:774]) followed by **one `FRME` per glyph, each containing a
+single `FOBJ`**. There is no separate metadata chunk: the `FOBJ` header carries the glyph
+geometry — `codec` u16LE@+8, `xoffs` i16LE@+10, `yoffs` i16LE@+12, `width` u16LE@+14,
+`height` u16LE@+16, glyph data at `+22`, all offsets relative to the FOBJ chunk start.
+Verified across all 6 NUT files: glyph counts 234/234/234/234/233/234 (1403 total);
+codecs `1` (BIGFONT) and `44` (the rest) — codec 21 never occurs, and 44 is decoded by
+`NutRenderer::codec21`. The glyph buffer is `memset` to the codec's transparent index
+(`0` for codec 1, `2` for codec 44) before decoding, so **that index maps to alpha 0** in
+the emitted RGBA PNG and every other index is opaque.
 
 ### 4.3 SCUMM v7 `DIG.LA0`/`DIG.LA1`
 `LA0` (16 KB) is the v7 index: `RNAM` (u16LE id + 9 name bytes XOR 0xFF), `MAXS`,
@@ -188,10 +193,13 @@ thedig-textures verify  [--out <dir>]
   indexed pixel bytes. Any mismatch prints file, frame index, first differing offset.
 - `make verify` runs unit tests then the full differential pass. Acceptance requires
   55/55 files, 0 byte mismatches.
-- `LA1`/`NUT` correctness reuses the same oracle functions for their row-BOMP payload
-  paths, plus hermetic fixtures (§8) and manual proof: documented comparison of first
-  frames of `SQ1`/menu screens against the running game (recorded under `docs/proofs/`
-  after first run).
+- `NUT` correctness is byte-exact: `san-oracle nut FILE` emits per-glyph records
+  (dimensions, transparency index, palette, glyph pixels) built from the vendored
+  `codec1.cpp` and the extracted `codec21` body; `tools/diff_nut.py` compares them
+  against `digart/nut.py` over all 6 `.NUT` files (0 mismatches). `LA1` correctness
+  reuses the same row-BOMP oracle function plus hermetic fixtures (§8) and manual proof:
+  documented comparison of first frames of `SQ1`/menu screens against the running game
+  (recorded under `docs/proofs/` after first run).
 
 ## 8. Testing
 
@@ -241,7 +249,8 @@ Each module is independently testable and has one owner per format. Runtime deps
 ## 12. Success criteria (definition of done)
 
 1. `thedig-textures extract` completes on the user's bundle with zero unexpected errors.
-2. `make verify`: 55/55 SAN files byte-identical to the oracle; unit tests green.
+2. `make verify`: 55/55 SAN files and 6/6 NUT files byte-identical to the oracle; unit
+   tests green.
 3. Every `.NUT` image and every decodable `LA1` bitmap present under `out/` and listed
    in `manifest.json`; each manifest entry's `path` exists and its `width`/`height`/
    `palette` match the file on disk.
