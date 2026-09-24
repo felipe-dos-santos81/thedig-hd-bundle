@@ -303,7 +303,7 @@ def bomp_decode_line(dst: bytearray, dst_off: int, src: bytes, src_off: int,
   - Raises `DecodeError` for malformed container. `SanReader.skipped: dict[str, int]` is public for diagnostics; `iter_frames` also exposes the reader via generator attribute — tests may construct `SanReader` directly for `skipped` inspection; `SanReader(data, source).frames()`.
 
 Behavior (spec §4.1; upstream `smush_player.cpp` — follow exactly):
-- Container: `ANIM` + u32BE total; chunks are `tag(4) + BE u32 size + payload`, advance `off = chunk_start + size + (size & 1)` for every chunk including `AHDR`. Top-level unknown tag → `DecodeError`.
+- Container: `ANIM` + u32BE total; chunks are `tag(4) + u32BE payload-size + payload` (the size field is the **payload length**, excluding the 8-byte header); advance `off = chunk_start + 8 + size + (size & 1)` for every chunk including `AHDR`. Top-level unknown tag → `DecodeError`.
 - `AHDR` (payload len ≥ 0x306): u16LE version@0 (assert 2), u16LE numFrames@2, palette = payload[6:774], u16LE fps@0x306. Announced frame count stored on `reader.num_frames_announced` (a mismatch with the count of emitted frames is recorded in `skipped["FRAME_COUNT_MISMATCH"]`, never fatal).
 - `FRME` sub-chunks: same BE-size/padding walk over the payload; per-frame local sub-chunk handlers; unknown sub-chunk → `skipped["?"+tag] += 1` (the engine would error; for extraction we log, and the census in Task 5's full-bundle run proves the set is benign — any surprise here is caught by `make verify` frame-count parity).
 - `NPAL`: `pal = payload[0:768]` (assert len ≥ 0x300).
@@ -460,22 +460,23 @@ class SanReader:
         emitted = 0
         while off + 8 <= n:
             tag, size = d[off:off + 4], int.from_bytes(d[off + 4:off + 8], "big")
-            if size < 8 or off + size > n:
+            if off + 8 + size > n:
                 raise DecodeError(self.source, off, f"bad {tag!r} chunk size {size}")
             body = off + 8
             if tag == b"AHDR":
-                if size - 8 < 0x306:
-                    raise DecodeError(self.source, body, f"AHDR too small {size - 8}")
-                p = d[body:body + size - 8]
+                if size < 0x306:
+                    raise DecodeError(self.source, body, f"AHDR too small {size}")
+                p = d[body:body + size]
                 ver, self.num_frames_announced = struct.unpack_from("<HH", p, 0)
+                assert ver == 2
                 self.pal = bytearray(p[6:774])
             elif tag == b"FRME":
-                self._feed(d[body:body + size - 8])
+                self._feed(d[body:body + size])
                 emitted += 1
                 yield SanFrame(bytes(self.buf), bytes(self.pal))
             else:
-                self.skipped["top?" + tag.hex()] = 1
-            off = body + size - 8 + ((size - 8) & 1)
+                raise DecodeError(self.source, off, f"unknown top-level chunk {tag!r}")
+            off = body + size + (size & 1)
         if self.num_frames_announced != emitted:
             self.skipped["FRAME_COUNT_MISMATCH"] = self.num_frames_announced - emitted
 
@@ -486,6 +487,7 @@ class SanReader:
             size = int.from_bytes(f[p + 4:p + 8], "big")
             payload = f[p + 8:p + 8 + size]
             if tag == b"NPAL":
+                assert len(payload) >= 0x300
                 self.pal = bytearray(payload[:768])
             elif tag == b"XPAL":
                 self._xpal(payload)
@@ -520,7 +522,7 @@ class SanReader:
 def iter_frames(data: bytes, source: str = "?") -> Iterator[SanFrame]:
     return SanReader(data, source).frames()
 ```
-(Add `import struct` at top. Chunk-size subtlety: outer `size` includes the 8-byte header; payload length is `size - 8`; padding computed from the payload length — matches BE-size semantics used in the real files.)
+(Add `import struct` at top. Chunk-size subtlety: outer `size` is the **payload length only** — it excludes the 8-byte `tag+size` header. Next chunk starts at `chunk_start + 8 + size + (size & 1)`. Verified against all 55 real `.SAN` files: the payload-only stride lands exactly on the next tag; the header-inclusive reading desyncs by 8 bytes. Padding is computed from the payload length.)
 
 - [ ] **Step 5:** `make check` → PASS. Commit `"feat: SAN container walk with NPAL/XPAL palette state machine"`.
 
