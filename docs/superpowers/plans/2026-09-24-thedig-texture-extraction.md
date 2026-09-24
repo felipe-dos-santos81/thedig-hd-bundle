@@ -791,6 +791,8 @@ def nut_codec21(buf, off, src, s_off, w, h, pitch):
             n = run if length >= 0 else run + length
             buf[o:o + n] = src[s_off:s_off + n]
             o += n; s_off += n
+            if length <= 0:                        # C `do { ... } while (len > 0)`
+                break
         s_off = row_next; off += pitch; h -= 1
 ```
 The vendored `NutRenderer::codec21` (`nut_renderer.cpp:65-94`) is authoritative; this appendix is a reading aid. Note the skip advances by **pixels** (`o += skip`), not rows.
