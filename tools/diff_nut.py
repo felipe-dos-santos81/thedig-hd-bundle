@@ -12,26 +12,12 @@ for the NUT port: until ``digart.nut`` decodes codecs 1/44 it is expected to fai
 from __future__ import annotations
 
 import struct
-import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
+from _oracle import BUNDLE, PALETTE_SIZE, first_diff, preflight, run_files, run_oracle
 
-ORACLE = REPO / "vendor" / "san-oracle" / "san-oracle"
-BUNDLE = (
-    Path.home()
-    / "Documents"
-    / "The Dig®.app"
-    / "Contents"
-    / "Resources"
-    / "game"
-    / "game"
-)
-PALETTE_SIZE = 768
 RECORD_HEADER = 4 + 4 + 1 + PALETTE_SIZE  # "NUTG" + u16LE(w,h) + u8 transparency + palette
 
 
@@ -56,32 +42,16 @@ def parse_oracle(data: bytes) -> Iterator[tuple[int, int, int, bytes, bytes]]:
         p = index_off + w * h
 
 
-def first_diff(a: bytes, b: bytes) -> int:
-    limit = min(len(a), len(b))
-    for i in range(limit):
-        if a[i] != b[i]:
-            return i
-    return limit
-
-
 def compare_file(path: Path) -> list[str]:
     """Return human-readable mismatches for one file (empty list == identical)."""
     from digart import nut
 
     try:
         py_images = nut.iter_images(path.read_bytes(), str(path))
-        oracle_images = parse_oracle(_run_oracle(path))
+        oracle_images = parse_oracle(run_oracle("nut", path))
         return _compare_streams(path, py_images, oracle_images)
     except Exception as exc:  # decode error on either side
         return [f"{path.name}: {type(exc).__name__}: {exc}"]
-
-
-def _run_oracle(path: Path) -> bytes:
-    proc = subprocess.run([str(ORACLE), "nut", str(path)], capture_output=True)
-    if proc.returncode != 0:
-        msg = proc.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"oracle exit {proc.returncode}: {msg}")
-    return proc.stdout
 
 
 def _compare_streams(
@@ -122,36 +92,14 @@ def _compare_streams(
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if not ORACLE.exists():
-        print(f"oracle binary missing: {ORACLE}\nrun `make oracle` first", file=sys.stderr)
-        return 1
-    if not BUNDLE.is_dir():
-        print(f"game bundle not found: {BUNDLE}; nothing to verify", file=sys.stderr)
-        return 0
-
+    rc = preflight()
+    if rc is not None:
+        return rc
     files = find_nut_files()
     if not files:
         print(f"no .NUT files under {BUNDLE}", file=sys.stderr)
         return 1
-
-    total_errors = 0
-    matched = 0
-    for path in files:
-        errors = compare_file(path)
-        if errors:
-            total_errors += len(errors)
-            for line in errors[:5]:
-                print(line, file=sys.stderr)
-            if len(errors) > 5:
-                print(f"{path.name}: ... {len(errors) - 5} more mismatch(es)", file=sys.stderr)
-        else:
-            matched += 1
-
-    if total_errors:
-        print(f"FAIL: {total_errors} mismatch(es) across {len(files)} files", file=sys.stderr)
-        return 1
-    print(f"PASS: {matched}/{len(files)} files byte-identical")
-    return 0
+    return run_files(files, compare_file)
 
 
 if __name__ == "__main__":

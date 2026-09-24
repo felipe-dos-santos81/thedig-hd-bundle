@@ -14,33 +14,19 @@ expected to fail.
 from __future__ import annotations
 
 import struct
-import subprocess
 import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parent.parent
-if str(REPO) not in sys.path:
-    sys.path.insert(0, str(REPO))
+from _oracle import BUNDLE, PALETTE_SIZE, first_diff, preflight, run_oracle, run_single
 
-ORACLE = REPO / "vendor" / "san-oracle" / "san-oracle"
-BUNDLE = (
-    Path.home()
-    / "Documents"
-    / "The Dig®.app"
-    / "Contents"
-    / "Resources"
-    / "game"
-    / "game"
-)
-PALETTE_SIZE = 768
 BITMAP_HEADER = 4 + 4 + 1 + PALETTE_SIZE  # "LA1B" + u16LE(w,h) + u8 transparent + palette
 MAGICS = (b"LA1B", b"LA1E")
 
 
-def find_la1_files(bundle: Path = BUNDLE) -> tuple[Path, Path]:
-    """Return ``(DIG.LA0, DIG.LA1)``; both are inputs to ``iter_bitmaps``."""
-    return bundle / "DIG.LA0", bundle / "DIG.LA1"
+def find_la1_file(bundle: Path = BUNDLE) -> Path:
+    """Return ``DIG.LA1``, the container decoded by ``iter_bitmaps``."""
+    return bundle / "DIG.LA1"
 
 
 def parse_oracle(
@@ -76,35 +62,17 @@ def parse_oracle(
             raise ValueError(f"bad record magic at offset {p}: {magic!r}")
 
 
-def first_diff(a: bytes, b: bytes) -> int:
-    limit = min(len(a), len(b))
-    for i in range(limit):
-        if a[i] != b[i]:
-            return i
-    return limit
-
-
-def compare_file(la0: Path, la1: Path) -> list[str]:
+def compare_file(la1: Path) -> list[str]:
     """Return human-readable mismatches for DIG.LA1 (empty list == identical)."""
     from digart import la1 as la1_mod
 
     try:
         py_errors: list = []
-        py_bitmaps = list(
-            la1_mod.iter_bitmaps(la0.read_bytes(), la1.read_bytes(), py_errors)
-        )
-        oracle = list(parse_oracle(_run_oracle(la1)))
+        py_bitmaps = list(la1_mod.iter_bitmaps(la1.read_bytes(), py_errors))
+        oracle = list(parse_oracle(run_oracle("la1", la1)))
         return _compare_streams(la1, py_bitmaps, py_errors, oracle)
     except Exception as exc:  # decode error on either side
         return [f"{la1.name}: {type(exc).__name__}: {exc}"]
-
-
-def _run_oracle(path: Path) -> bytes:
-    proc = subprocess.run([str(ORACLE), "la1", str(path)], capture_output=True)
-    if proc.returncode != 0:
-        msg = proc.stderr.decode(errors="replace").strip()
-        raise RuntimeError(f"oracle exit {proc.returncode}: {msg}")
-    return proc.stdout
 
 
 def _compare_streams(path: Path, py_bitmaps: list, py_errors: list, oracle: list) -> list[str]:
@@ -150,28 +118,14 @@ def _compare_streams(path: Path, py_bitmaps: list, py_errors: list, oracle: list
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if not ORACLE.exists():
-        print(f"oracle binary missing: {ORACLE}\nrun `make oracle` first", file=sys.stderr)
+    rc = preflight()
+    if rc is not None:
+        return rc
+    la1 = find_la1_file()
+    if not la1.is_file():
+        print(f"missing {la1}", file=sys.stderr)
         return 1
-    if not BUNDLE.is_dir():
-        print(f"game bundle not found: {BUNDLE}; nothing to verify", file=sys.stderr)
-        return 0
-
-    la0, la1 = find_la1_files()
-    if not la0.is_file() or not la1.is_file():
-        print(f"missing {la0} or {la1}", file=sys.stderr)
-        return 1
-
-    errors = compare_file(la0, la1)
-    if errors:
-        for line in errors[:5]:
-            print(line, file=sys.stderr)
-        if len(errors) > 5:
-            print(f"{la1.name}: ... {len(errors) - 5} more mismatch(es)", file=sys.stderr)
-        print(f"FAIL: {len(errors)} mismatch(es)", file=sys.stderr)
-        return 1
-    print(f"PASS: {la1.name} byte-identical")
-    return 0
+    return run_single(la1, compare_file(la1), f"PASS: {la1.name} byte-identical")
 
 
 if __name__ == "__main__":

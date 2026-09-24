@@ -1,5 +1,3 @@
-import struct
-
 import pytest
 
 from digart import san as S
@@ -9,20 +7,8 @@ from tests.fixtures import make_fixtures as fx
 
 W, H = 320, 200
 FRAME = W * H
-
-
-def codec_header(variant: int, table: int = 0, seq: int = 0,
-                 decoded_size: int = 0, mask: int = 0) -> bytes:
-    """16-byte codec-37 sub-header: variant, table, seq, size, 4 pad, mask, 3 pad."""
-    return (bytes([variant, table]) + struct.pack("<H", seq)
-            + struct.pack("<I", decoded_size) + bytes(4)
-            + bytes([mask]) + bytes(3))
-
-
-def fobj(codec: int, w: int, h: int, data: bytes, left: int = 0, top: int = 0,
-         objid: int = 0, parm2: int = 0) -> bytes:
-    hdr = struct.pack("<HhhHHHH", codec, left, top, w, h, objid, parm2)
-    return fx.be(b"FOBJ", hdr + data)
+codec_header = fx.codec_header
+fobj = fx.fobj
 
 
 def test_delta_blocks_decoder_variants():

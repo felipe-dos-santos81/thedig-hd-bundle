@@ -1,13 +1,14 @@
 import struct
 
+
+# ── SAN / NUT synthetic builders ─────────────────────────────────────────────
+
 def be(tag: bytes, payload: bytes) -> bytes:
     out = tag + struct.pack(">I", len(payload)) + payload
     if len(payload) & 1:
         out += b"\x00"
     return out
 
-def fsub(tag: bytes, payload: bytes) -> bytes:
-    return be(tag, payload)
 
 def ahdr(payload_len: int = 0x31a, palette: bytes | None = None, num_frames: int = 0, fps: int = 12) -> bytes:
     p = bytearray(payload_len)
@@ -16,6 +17,7 @@ def ahdr(payload_len: int = 0x31a, palette: bytes | None = None, num_frames: int
     if palette is not None:
         p[6:6 + 768] = palette
     return p
+
 
 def xpal(cmd: int, delta: bytes = b"", full_palette: bytes | None = None) -> bytes:
     if cmd == 256:
@@ -28,15 +30,19 @@ def xpal(cmd: int, delta: bytes = b"", full_palette: bytes | None = None) -> byt
             p += full_palette
     return be(b"XPAL", p)
 
+
 def npal(pal: bytes) -> bytes:
     return be(b"NPAL", pal)
+
 
 def frame(*subs: bytes) -> bytes:
     return be(b"FRME", b"".join(subs))
 
+
 def san(frames: list[bytes], palette: bytes = bytes(768)) -> bytes:
     body = be(b"AHDR", ahdr(palette=palette, num_frames=len(frames))) + b"".join(frames)
     return b"ANIM" + struct.pack(">I", 8 + len(body)) + body
+
 
 def mk_nut(glyphs: list[tuple[int, int, int, bytes]], palette: bytes = bytes(768)) -> bytes:
     """Build a NUT font: ANIM + AHDR + one FRME(FOBJ) per ``(codec, w, h, payload)``.
@@ -47,7 +53,47 @@ def mk_nut(glyphs: list[tuple[int, int, int, bytes]], palette: bytes = bytes(768
     """
     frames = []
     for codec, w, h, payload in glyphs:
-        fobj = be(b"FOBJ", struct.pack("<HhhHHHH", codec, 0, 0, w, h, 0, 0) + payload)
-        frames.append(be(b"FRME", fobj))
+        body = struct.pack("<HhhHHHH", codec, 0, 0, w, h, 0, 0) + payload
+        frames.append(be(b"FRME", be(b"FOBJ", body)))
     body = be(b"AHDR", ahdr(palette=palette, num_frames=len(glyphs))) + b"".join(frames)
     return b"ANIM" + struct.pack(">I", len(body)) + body
+
+
+# ── Shared byte-builders for the LA1-family and codec-37 fixtures ────────────
+
+def be32(n: int) -> bytes:
+    return struct.pack(">I", n)
+
+
+def le32(n: int) -> bytes:
+    return struct.pack("<I", n)
+
+
+def le16(n: int) -> bytes:
+    return struct.pack("<H", n)
+
+
+def la1_chunk(tag: bytes, payload: bytes) -> bytes:
+    """Header-inclusive LA1 chunk: tag + u32BE size (8 + payload), no padding."""
+    return tag + be32(8 + len(payload)) + payload
+
+
+def codec_header(variant: int, table: int = 0, seq: int = 0,
+                 decoded_size: int = 0, mask: int = 0) -> bytes:
+    """16-byte codec-37 sub-header: variant, table, seq, size, 4 pad, mask, 3 pad."""
+    return (bytes([variant, table]) + struct.pack("<H", seq)
+            + struct.pack("<I", decoded_size) + bytes(4)
+            + bytes([mask]) + bytes(3))
+
+
+def fobj(codec: int, w: int, h: int, data: bytes, left: int = 0, top: int = 0,
+         objid: int = 0, parm2: int = 0) -> bytes:
+    hdr = struct.pack("<HhhHHHH", codec, left, top, w, h, objid, parm2)
+    return be(b"FOBJ", hdr + data)
+
+
+def codec1_payload() -> bytes:
+    """Two rows for a 4x2 NUT glyph: a literal run, then an RLE run."""
+    row0 = struct.pack("<H", 5) + bytes([0x06, 5, 6, 7, 8])
+    row1 = struct.pack("<H", 2) + bytes([0x07, 3])
+    return row0 + row1

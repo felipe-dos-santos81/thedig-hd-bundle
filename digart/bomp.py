@@ -1,3 +1,6 @@
+import struct
+
+
 def bomp_decode_line(dst: bytearray, dst_off: int, src: bytes, src_off: int,
                      size: int, set_zero: bool = True) -> None:
     assert size > 0
@@ -22,3 +25,16 @@ def bomp_decode_line(dst: bytearray, dst_off: int, src: bytes, src_off: int,
                 if color:
                     dst[dst_off] = color
                 dst_off += 1
+
+
+def bomp_decode_rows(dst: bytearray, dst_pitch: int, src: bytes, src_off: int,
+                     width: int, height: int, set_zero: bool = True) -> None:
+    """Decode ``height`` rows of ``src``, each prefixed by a u16LE row length.
+
+    Shared by the LA1/OBIM, AKOS/CDAT and NUT/codec-1 decoders, which all store a
+    BOMP stream as one length-prefixed row per output row.
+    """
+    for row in range(height):
+        bomp_decode_line(dst, row * dst_pitch, src, src_off + 2, width,
+                         set_zero=set_zero)
+        src_off += struct.unpack_from("<H", src, src_off)[0] + 2

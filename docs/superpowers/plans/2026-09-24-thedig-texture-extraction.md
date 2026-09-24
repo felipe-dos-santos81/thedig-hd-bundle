@@ -681,10 +681,9 @@ def test_case2_bomp_rows():
   - `AssetRecord(id, kind, source, frame, name, width, height, has_alpha, palette, path)` dataclass, `to_dict()` in spec §5.1 key order.
   - `palette_hash(pal: bytes) -> str` = `sha256(pal).hexdigest()`.
   - `ManifestBuilder(out_dir: Path)`: `.record_palette(pal: bytes) -> str`, `.add(rec: AssetRecord)`, `.finalize(extracted_at: str, game_root_hash: str) -> None` writing `manifest.json` + `palettes/<hash>.{json,png}`; insertion order preserved; counts computed at finalize.
-  - `write_san_png(out_dir: Path, rel: Path, frame: SanFrame) -> None`;
-    `write_indexed_png(out_dir: Path, rel: Path, index: bytes, w: int, h: int, pal: bytes, transparent0: bool) -> None`.
+  - `write_indexed_png(out_dir: Path, rel: Path, index: bytes, w: int, h: int, pal: bytes, transparent0: bool) -> None` (opaque RGB when `transparent0` is false).
 
-- [ ] **Step 1: Failing tests** `tests/test_manifest.py`: build 2 SAN records + 1 palette in `tmp_path`; assert `manifest.json` top-level keys, `counts.san_frames == 2`, palette sidecar `<hash>.json` has 256 `[r,g,b]` entries and `<hash>.png` strip; `write_san_png` output re-opened with Pillow equals `index→rgb(pal)` pixel-for-pixel; `transparent0` PNG has `getpixel((0,0))[3] == 0` where index==0 and `255` where index!=0; determinism: two identical runs byte-equal the PNG and manifest files (compare `read_bytes()`); id format `san:sq1:00000` via `rec_id("san", "SQ1.SAN", frame=0)` helper exported from manifest.py:
+- [ ] **Step 1: Failing tests** `tests/test_manifest.py`: build 2 SAN records + 1 palette in `tmp_path`; assert `manifest.json` top-level keys, `counts.san_frames == 2`, palette sidecar `<hash>.json` has 256 `[r,g,b]` entries and `<hash>.png` strip; `write_indexed_png(..., transparent0=False)` output re-opened with Pillow equals `index→rgb(pal)` pixel-for-pixel; a `transparent0=True` PNG has `getpixel((0,0))[3] == 0` where index==0 and `255` where index!=0; determinism: two identical runs byte-equal the PNG and manifest files (compare `read_bytes()`); id format `san:sq1:00000` via `rec_id("san", "SQ1.SAN", frame=0)` helper exported from manifest.py:
 ```python
 def rec_id(kind: str, source: str, frame: int) -> str:
     stem = Path(source).stem.lower()
@@ -799,7 +798,7 @@ Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored
 
 **Interfaces:**
 - Consumes: `bomp_decode_line`, `DecodeError`, the `san-oracle la1` records, `docs/la1-census.txt`.
-- Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent0: bool)`; `iter_bitmaps(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`. `name` = `room<NNN>` for RMIM, `obj<NNN>_<state>` for OBIM.
+- Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent: int | None)` with a derived `transparent0` property (`transparent == 0`); `iter_bitmaps(la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`. `name` = `room<NNN>` for RMIM, `obj<NNN>_<state>` for OBIM.
 
 Rules:
 - Walk with the header-inclusive stride; extract `RMIM` (room backdrops) and `OBIM` (object images).
@@ -838,7 +837,7 @@ Rules:
 
 **Interfaces:**
 - Consumes: `DecodeError`, the `san-oracle akos` records.
-- Produces: `digart.akos.iter_cels(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[AkosCel]` (`AkosCel` extends `La1Bitmap`; `name = f"costume{id:03d}_{cel:03d}"`). **Not folded into `iter_bitmaps`** — the LA1 differential gates exactly the 753 RMIM+OBIM records, so `iter_bitmaps` stays RMIM+OBIM and the CLI consumes both iterators.
+- Produces: `digart.akos.iter_cels(la1: bytes, errors: list[DecodeError]) -> Iterator[AkosCel]` (`AkosCel` extends `La1Bitmap`; `name = f"costume{id:03d}_{cel:03d}"`). **Not folded into `iter_bitmaps`** — the LA1 differential gates exactly the 753 RMIM+OBIM records, so `iter_bitmaps` stays RMIM+OBIM and the CLI consumes both iterators.
 
 Rules: port the AKOS cel codecs and costume-table parsing from the vendored `akos.cpp`/`base-costume.cpp`; faithful transcription; unknown codec → `DecodeError` in `errors`.
 

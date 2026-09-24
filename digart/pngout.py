@@ -4,7 +4,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from .san import FRAME_H, FRAME_W, SanFrame
+# Index 0 -> alpha 0, every other index -> alpha 255.
+_ALPHA0 = bytes([0] + [255] * 255)
 
 
 def _save_rgb(path: Path, index: bytes, w: int, h: int, pal: bytes) -> None:
@@ -19,14 +20,8 @@ def _save_rgba(path: Path, index: bytes, w: int, h: int, pal: bytes) -> None:
     im = Image.frombytes("P", (w, h), index)
     im.putpalette(pal)
     rgba = im.convert("RGBA")
-    alpha = index.translate(bytes(0 if i == 0 else 255 for i in range(256)))
-    rgba.putalpha(Image.frombytes("L", (w, h), alpha))
+    rgba.putalpha(Image.frombytes("L", (w, h), index.translate(_ALPHA0)))
     rgba.save(path, optimize=False)
-
-
-def write_san_png(out_dir: Path, rel: Path, frame: SanFrame) -> None:
-    """Write an opaque SAN back-buffer frame (index 0 is not transparent)."""
-    _save_rgb(Path(out_dir) / rel, frame.index, FRAME_W, FRAME_H, frame.palette)
 
 
 def write_indexed_png(out_dir: Path, rel: Path, index: bytes, w: int, h: int,

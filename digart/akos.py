@@ -27,9 +27,10 @@ CDAT/MajMin). Any other codec, or a non-positive dimension, records a
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from .bomp import bomp_decode_line
+from .bomp import bomp_decode_rows
 from .errors import DecodeError
-from .la1 import La1Bitmap, _MajMinCodec, _be32, _find_child, _is_tag, _le16, _le32
+from .la1 import (La1Bitmap, _MajMinCodec, _be32, _children, _find_child,
+                  _iter_rooms, _le16, _le32)
 
 _BYLE_RLE_CODEC = 1
 _CDAT_RLE_CODEC = 5
@@ -101,9 +102,7 @@ def _byle_rle_decode(buf: bytearray, w: int, h: int, data: bytes, src_off: int,
 
 def _cdat_decode(buf: bytearray, w: int, h: int, data: bytes, src_off: int) -> None:
     """``Scumm::decompressBomp`` (bomp.cpp:42): one BOMP row per cel row."""
-    for y in range(h):
-        bomp_decode_line(buf, y * w, data, src_off + 2, w, set_zero=True)
-        src_off += _le16(data, src_off) + 2
+    bomp_decode_rows(buf, w, data, src_off, w, h, set_zero=True)
 
 
 def _majmin_decode(buf: bytearray, w: int, h: int, data: bytes, src_off: int) -> None:
@@ -168,51 +167,26 @@ def _process_costume(data: bytes, akos: int, costume: int, errors: list,
             width=w,
             height=h,
             palette=bytes(_PALETTE_SIZE),
-            transparent0=transparent == _TRANSPARENT_BYLE,
             costume=costume,
             cel=cel,
             transparent=transparent,
         )
 
 
-def iter_cels(la0: bytes, la1: bytes, errors: list,
+def iter_cels(la1: bytes, errors: list,
               source: str = "AKOS") -> Iterator[La1Bitmap]:
     """Yield every decodable costume cel from ``DIG.LA1`` in file order.
 
-    ``la0`` is accepted for symmetry with ``iter_bitmaps`` but unused: the LA1
-    file carries the whole costume table. Undecodable cels append a
-    ``DecodeError`` (with ``costume``/``cel``/``codec`` attributes, the oracle's
-    ``AKOSE`` record) to ``errors`` and yield no cel.
+    Undecodable cels append a ``DecodeError`` (with ``costume``/``cel``/``codec``
+    attributes, the oracle's ``AKOSE`` record) to ``errors`` and yield no cel.
     """
-    if len(la1) < 16 or la1[:4] != b"LECF":
-        raise DecodeError(source, 0, f"missing LECF: {la1[:4]!r}")
-    lecf_size = _be32(la1, 4)
-    if lecf_size > len(la1):
-        raise DecodeError(source, 4, f"LECF size {lecf_size} overruns file")
-    if la1[8:12] != b"LOFF":
-        raise DecodeError(source, 8, f"missing LOFF: {la1[8:12]!r}")
-
-    loff = 16
-    count = la1[loff]
     costume = 0
-    for i in range(count):
-        room = la1[loff + 1 + 5 * i]
-        room_off = _le32(la1, loff + 2 + 5 * i)
-        if room_off < 8 or room_off + 8 > len(la1):
-            raise DecodeError(source, room_off, f"room {room} offset out of range")
-        if la1[room_off:room_off + 4] != b"ROOM":
-            raise DecodeError(source, room_off, f"room {room} is not ROOM")
-
+    for _room, room_off in _iter_rooms(la1, source):
+        # The AKOS chunk is a room resource addressed inside the enclosing LFLF,
+        # so the walk runs from the ROOM header to the LFLF end.
         lflf_off = room_off - 8
         lflf_end = lflf_off + _be32(la1, lflf_off + 4)
-        c = room_off + 8
-        while c + 8 <= lflf_end:
-            if not _is_tag(la1, c):
-                break
-            size = _be32(la1, c + 4)
-            if size < 8 or c + size > lflf_end:
-                break
-            if la1[c:c + 4] == b"AKOS":
+        for tag, c, _size in _children(la1, room_off, lflf_end):
+            if tag == b"AKOS":
                 costume += 1
                 yield from _process_costume(la1, c, costume, errors, source)
-            c += size

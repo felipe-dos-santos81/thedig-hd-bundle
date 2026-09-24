@@ -18,16 +18,7 @@ from tests.fixtures import make_fixtures as fx
 PAL = bytes((i * 5) & 0xFF for i in range(768))
 
 
-def chunk(tag: bytes, payload: bytes) -> bytes:
-    """Header-inclusive LA1 chunk: tag + u32BE size (8 + payload), no padding."""
-    return tag + struct.pack(">I", 8 + len(payload)) + payload
-
-
-def codec1_payload() -> bytes:
-    """Two rows for a 4x2 glyph (literal run, then an RLE run)."""
-    row0 = struct.pack("<H", 5) + bytes([0x06, 5, 6, 7, 8])
-    row1 = struct.pack("<H", 2) + bytes([0x07, 3])
-    return row0 + row1
+chunk = fx.la1_chunk
 
 
 def empty_la1() -> bytes:
@@ -107,7 +98,7 @@ def default_app(tmp_path: Path) -> Path:
     return make_app(
         tmp_path,
         san=fx.san([fx.frame(), fx.frame()], palette=PAL),
-        nut=fx.mk_nut([(1, 4, 2, codec1_payload())], PAL),
+        nut=fx.mk_nut([(1, 4, 2, fx.codec1_payload())], PAL),
         la1=empty_la1(),
     )
 
@@ -148,7 +139,7 @@ def test_extract_errors_and_preflight(tmp_path, capsys):
     # truncated SAN -> exit 1 with an _errors.json entry
     good = fx.san([fx.frame(), fx.frame()], palette=PAL)
     app = make_app(tmp_path / "truncated", san=good[:20],  # cut inside the AHDR chunk
-                   nut=fx.mk_nut([(1, 4, 2, codec1_payload())], PAL), la1=empty_la1())
+                   nut=fx.mk_nut([(1, 4, 2, fx.codec1_payload())], PAL), la1=empty_la1())
     out = tmp_path / "out"
     assert main(["extract", "--game", str(app), "--out", str(out), "--jobs", "1"]) == 1
     doc = json.loads((out / "_errors.json").read_text())

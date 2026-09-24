@@ -188,7 +188,6 @@ class DeltaBlocksDecoder:
         self._delta_bufs = [0x4D80, 0xE880 + self._frame_size]
         self._offset_table = [0] * 255
         self._cur_table = 0
-        self._prev_seq_nb = 0
         self._table_last_pitch = -1
         self._table_last_index = -1
 
@@ -472,6 +471,5 @@ class DeltaBlocksDecoder:
             proc = self._proc4_with_fdfe if (mask_flags & 4) else self._proc4_without_fdfe
             proc(self._delta_bufs[cur], src, 16, next_offs, bw, bh, pitch)
 
-        self._prev_seq_nb = seq_nb
         out_off = self._delta_bufs[self._cur_table]
         dst[0:self._frame_size] = buf[out_off:out_off + self._frame_size]

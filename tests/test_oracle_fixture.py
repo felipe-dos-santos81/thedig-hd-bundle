@@ -23,18 +23,8 @@ W, H = 320, 200
 FRAME = W * H
 BLOCKS = (W // 4) * (H // 4)
 PAL = bytes([(i * 7) & 0xFF for i in range(768)])
-
-
-def codec_header(variant: int, table: int = 0, seq: int = 0,
-                 decoded_size: int = 0, mask: int = 0) -> bytes:
-    return (bytes([variant, table]) + struct.pack("<H", seq)
-            + struct.pack("<I", decoded_size) + bytes(4)
-            + bytes([mask]) + bytes(3))
-
-
-def fobj(codec: int, w: int, h: int, data: bytes) -> bytes:
-    hdr = struct.pack("<HhhHHHH", codec, 0, 0, w, h, 0, 0)
-    return fx.be(b"FOBJ", hdr + data)
+codec_header = fx.codec_header
+fobj = fx.fobj
 
 
 def raw_frame(color: int, seq: int = 0) -> bytes:

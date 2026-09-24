@@ -24,7 +24,7 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from .bomp import bomp_decode_line
+from .bomp import bomp_decode_rows
 from .errors import DecodeError
 
 _PALETTE_SIZE = 768
@@ -54,11 +54,15 @@ class La1Bitmap:
     width: int
     height: int
     palette: bytes
-    transparent0: bool
     # The decoder's transparent colour index, or None for an opaque bitmap:
     # 0 for a transparent SMAP strip (RMIM/OBIM), 255 for a BOMP OBIM object
-    # sprite. ``transparent0`` remains the oracle's per-strip flag.
+    # sprite.
     transparent: int | None
+
+    @property
+    def transparent0(self) -> bool:
+        """The oracle's per-strip transparent flag: exactly ``transparent == 0``."""
+        return self.transparent == 0
 
 
 def _be32(data: bytes, off: int) -> int:
@@ -78,20 +82,28 @@ def _is_tag(data: bytes, off: int) -> bool:
     return len(tag) == 4 and all(0x20 <= b <= 0x7E for b in tag)
 
 
-def _find_child(data: bytes, start: int, start_size: int, tag: bytes) -> int | None:
-    """Child chunk start within ``start``'s header-inclusive ``start_size``."""
-    end = start + start_size
+def _children(data: bytes, start: int, end: int) -> Iterator[tuple[bytes, int, int]]:
+    """Yield ``(tag, offset, size)`` for each valid child chunk in ``[start, end)``.
+
+    Walks ``start + 8`` onward with the header-inclusive stride ``next = offset +
+    size`` (no odd padding), stopping at the first non-tag or out-of-bounds chunk.
+    This is the single walk behind ``_find_child`` and the room/OBIM/AKOS scans.
+    """
     c = start + 8
     while c + 8 <= end:
         if not _is_tag(data, c):
-            return None
+            return
         size = _be32(data, c + 4)
         if size < 8 or c + size > end:
-            return None
-        if data[c:c + 4] == tag:
-            return c
+            return
+        yield data[c:c + 4], c, size
         c += size
-    return None
+
+
+def _find_child(data: bytes, start: int, start_size: int, tag: bytes) -> int | None:
+    """Offset of the first child chunk ``tag`` within ``start``'s header-inclusive size."""
+    end = start + start_size
+    return next((off for t, off, _ in _children(data, start, end) if t == tag), None)
 
 
 def _room_palette(data: bytes, pals: int) -> bytes | None:
@@ -357,8 +369,7 @@ def _decode_smap(data: bytes, smap: int, w: int, h: int, palette: bytes,
             return None
         if _decompress_bitmap(buf, s * 8, w, data, smap + off, h, transparent_color):
             transp = True
-    return La1Bitmap(name, bytes(buf), w, h, palette, transp,
-                     0 if transp else None)
+    return La1Bitmap(name, bytes(buf), w, h, palette, 0 if transp else None)
 
 
 def _decode_bomp(data: bytes, bomp: int, w: int, h: int, palette: bytes,
@@ -371,11 +382,8 @@ def _decode_bomp(data: bytes, bomp: int, w: int, h: int, palette: bytes,
         errors.append(DecodeError(source, res_off, "BOMP dimensions disagree with IMHD"))
         return None
     buf = bytearray(w * h)
-    src = body + 10
-    for y in range(bh):
-        bomp_decode_line(buf, y * w, data, src + 2, bw, set_zero=True)
-        src += _le16(data, src) + 2
-    return La1Bitmap(name, bytes(buf), w, h, palette, False, 255)
+    bomp_decode_rows(buf, w, data, body + 10, bw, bh, set_zero=True)
+    return La1Bitmap(name, bytes(buf), w, h, palette, 255)
 
 
 def _process_room(data: bytes, room_off: int, room: int, errors: list,
@@ -397,15 +405,7 @@ def _process_room(data: bytes, room_off: int, room: int, errors: list,
     if palette is None:
         palette = bytes(_PALETTE_SIZE)
 
-    c = room_off + 8
-    while c + 8 <= room_end:
-        if not _is_tag(data, c):
-            break
-        size = _be32(data, c + 4)
-        if size < 8 or c + size > room_end:
-            break
-        tag = data[c:c + 4]
-
+    for tag, c, size in _children(data, room_off, room_end):
         if tag == b"RMIM":
             im00 = _find_child(data, c, size, b"IM00")
             if im00 is not None:
@@ -421,39 +421,28 @@ def _process_room(data: bytes, room_off: int, room: int, errors: list,
                 obj_id = _le16(data, imhd + 8 + 4)
                 ow = _le16(data, imhd + 8 + 12)
                 oh = _le16(data, imhd + 8 + 14)
-                ic = c + 8
-                while ic + 8 <= c + size:
-                    if not _is_tag(data, ic):
-                        break
-                    isz = _be32(data, ic + 4)
-                    if isz < 8 or ic + isz > c + size:
-                        break
-                    if data[ic] == 0x49 and data[ic + 1] == 0x4D and data[ic + 2] != 0x48:
-                        state = data[ic + 2:ic + 4].decode("latin1")
-                        name = f"obj{obj_id:03d}_{state}"
-                        payload = ic + 8
-                        if data[payload:payload + 4] == b"SMAP":
-                            bmp = _decode_smap(data, payload, ow, oh, palette,
-                                               transparent_color, ic, source, name, errors)
-                        elif data[payload:payload + 4] == b"BOMP":
-                            bmp = _decode_bomp(data, payload, ow, oh, palette,
-                                               ic, source, name, errors)
-                        else:
-                            errors.append(DecodeError(source, ic, "unknown OBIM image container"))
-                            bmp = None
-                        if bmp is not None:
-                            yield bmp
-                    ic += isz
-        c += size
+                for itag, ic, _ in _children(data, c, c + size):
+                    if not (itag[:2] == b"IM" and itag[2] != 0x48):
+                        continue
+                    name = f"obj{obj_id:03d}_{itag[2:4].decode('latin1')}"
+                    payload = ic + 8
+                    if data[payload:payload + 4] == b"SMAP":
+                        bmp = _decode_smap(data, payload, ow, oh, palette,
+                                           transparent_color, ic, source, name, errors)
+                    elif data[payload:payload + 4] == b"BOMP":
+                        bmp = _decode_bomp(data, payload, ow, oh, palette,
+                                           ic, source, name, errors)
+                    else:
+                        errors.append(DecodeError(source, ic, "unknown OBIM image container"))
+                        bmp = None
+                    if bmp is not None:
+                        yield bmp
 
 
-def iter_bitmaps(la0: bytes, la1: bytes, errors: list,
-                 source: str = "LA1") -> Iterator[La1Bitmap]:
-    """Yield every decodable RMIM/OBIM bitmap from ``DIG.LA1`` in file order.
+def _iter_rooms(la1: bytes, source: str) -> Iterator[tuple[int, int]]:
+    """Yield ``(room, room_off)`` for each validated ``LOFF`` entry of ``DIG.LA1``.
 
-    ``la0`` (the companion ``DIG.LA0`` resource-name table) is not needed to
-    decode LA1. Undecodable resources append a ``DecodeError`` to ``errors``
-    (the oracle's ``LA1E`` records) and yield no bitmap.
+    Shared container walk for the RMIM/OBIM bitmaps and the AKOS costume cels.
     """
     if len(la1) < 16 or la1[:4] != b"LECF":
         raise DecodeError(source, 0, f"missing LECF: {la1[:4]!r}")
@@ -464,12 +453,22 @@ def iter_bitmaps(la0: bytes, la1: bytes, errors: list,
         raise DecodeError(source, 8, f"missing LOFF: {la1[8:12]!r}")
 
     loff = 16
-    count = la1[loff]
-    for i in range(count):
+    for i in range(la1[loff]):
         room = la1[loff + 1 + 5 * i]
         room_off = _le32(la1, loff + 2 + 5 * i)
         if room_off < 8 or room_off + 8 > len(la1):
             raise DecodeError(source, room_off, f"room {room} offset out of range")
         if la1[room_off:room_off + 4] != b"ROOM":
             raise DecodeError(source, room_off, f"room {room} is not ROOM")
+        yield room, room_off
+
+
+def iter_bitmaps(la1: bytes, errors: list,
+                 source: str = "LA1") -> Iterator[La1Bitmap]:
+    """Yield every decodable RMIM/OBIM bitmap from ``DIG.LA1`` in file order.
+
+    Undecodable resources append a ``DecodeError`` to ``errors`` (the oracle's
+    ``LA1E`` records) and yield no bitmap.
+    """
+    for room, room_off in _iter_rooms(la1, source):
         yield from _process_room(la1, room_off, room, errors, source)

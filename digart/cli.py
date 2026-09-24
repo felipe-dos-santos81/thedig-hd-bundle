@@ -29,13 +29,14 @@ from .errors import DecodeError
 from .la1 import iter_bitmaps
 from .manifest import AssetRecord, ManifestBuilder, palette_hash, rec_id
 from .nut import iter_images
-from .pngout import write_indexed_png, write_san_png
+from .pngout import write_indexed_png
 from .san import FRAME_H, FRAME_W, iter_frames
 
 GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")
 GAME_SUBPATH = Path("Contents") / "Resources" / "game" / "game"
 KINDS = ("san", "nut", "la1", "akos")
 REQUIRED = ("VIDEO", "DIG.LA0", "DIG.LA1")
+_IDENTITY = bytes(range(256))
 DIFFERENTIALS = ("diff_oracle.py", "diff_nut.py", "diff_la1.py", "diff_akos.py")
 # Manifest `kind` per extraction family; LA1 bitmaps and AKOS cels share one kind
 # (the schema's fixed counts dict has no separate akos bucket) and are told apart
@@ -160,10 +161,9 @@ def _extract_one(task: tuple[str, str, str, str]) -> tuple[list[dict], list[dict
         _extract_san(data, source, path.stem, out, records, errors)
     elif kind == "nut":
         _extract_nut(data, source, path.stem, out, records, errors)
-    elif kind == "la1":
-        _extract_la1((root / "DIG.LA0").read_bytes(), data, source, out, records, errors)
-    elif kind == "akos":
-        _extract_akos((root / "DIG.LA0").read_bytes(), data, source, out, records, errors)
+    elif kind in ("la1", "akos"):
+        iterate = iter_bitmaps if kind == "la1" else iter_cels
+        _extract_family(kind, iterate, data, source, out, records, errors)
     else:  # pragma: no cover - callers only build known kinds
         raise ValueError(f"unknown kind {kind!r}")
     return records, errors
@@ -173,7 +173,8 @@ def _extract_san(data: bytes, source: str, stem: str, out: Path,
                  records: list[dict], errors: list[dict]) -> None:
     for i, frame in enumerate(_stream(iter_frames(data, source), errors)):
         rel = Path("san") / stem / f"{i:05d}.png"
-        write_san_png(out, rel, frame)
+        write_indexed_png(out, rel, frame.index, FRAME_W, FRAME_H,
+                          frame.palette, False)
         records.append(_record("san", source, i, None, FRAME_W, FRAME_H,
                                False, frame.palette, rel))
 
@@ -182,7 +183,7 @@ def _normalize_transparent(index: bytes, palette: bytes, t: int) -> tuple[bytes,
     """Swap colour ``t`` with index 0 so an index-0-alpha writer makes it transparent."""
     if t == 0:
         return index, palette
-    table = bytearray(range(256))
+    table = bytearray(_IDENTITY)
     table[0], table[t] = t, 0
     pal = bytearray(palette)
     for c in range(3):
@@ -218,31 +219,22 @@ def _extract_nut(data: bytes, source: str, stem: str, out: Path,
                                img.height, has_alpha, palette, rel))
 
 
-def _extract_la1(la0: bytes, la1: bytes, source: str, out: Path,
-                 records: list[dict], errors: list[dict]) -> None:
-    local: list[DecodeError] = []
-    for bmp in _stream(iter_bitmaps(la0, la1, local, source), errors):
-        rel = Path("la1") / f"{bmp.name}.png"
-        # bmp.transparent is the decoder's index: 0 for a transparent SMAP
-        # strip, 255 for a BOMP OBIM sprite, None for an opaque backdrop.
-        palette, has_alpha = _write_bitmap(out, rel, bmp.index, bmp.width,
-                                           bmp.height, bmp.palette,
-                                           bmp.transparent)
-        records.append(_record("la1", source, None, bmp.name, bmp.width,
-                               bmp.height, has_alpha, palette, rel))
-    errors.extend(e.to_dict() for e in local)
+def _extract_family(family: str, iterate, la1: bytes, source: str, out: Path,
+                    records: list[dict], errors: list[dict]) -> None:
+    """Extract one LA1-family iterator (``la1`` bitmaps or ``akos`` cels).
 
-
-def _extract_akos(la0: bytes, la1: bytes, source: str, out: Path,
-                  records: list[dict], errors: list[dict]) -> None:
+    ``item.transparent`` is the decoder's transparent index — 0 for a transparent
+    SMAP strip, 255 for a BOMP OBIM sprite or CDAT/MajMin cel, ``None`` for an
+    opaque backdrop.
+    """
     local: list[DecodeError] = []
-    for cel in _stream(iter_cels(la0, la1, local, source), errors):
-        rel = Path("la1") / f"{cel.name}.png"
-        palette, has_alpha = _write_bitmap(out, rel, cel.index, cel.width,
-                                           cel.height, cel.palette,
-                                           cel.transparent)
-        records.append(_record("akos", source, None, cel.name, cel.width,
-                               cel.height, has_alpha, palette, rel))
+    for item in _stream(iterate(la1, local, source), errors):
+        rel = Path("la1") / f"{item.name}.png"
+        palette, has_alpha = _write_bitmap(out, rel, item.index, item.width,
+                                           item.height, item.palette,
+                                           item.transparent)
+        records.append(_record(family, source, None, item.name, item.width,
+                               item.height, has_alpha, palette, rel))
     errors.extend(e.to_dict() for e in local)
 
 

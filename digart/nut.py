@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from .bomp import bomp_decode_line
+from .bomp import bomp_decode_rows
 from .errors import DecodeError
 
 _PALETTE_SIZE = 768
@@ -42,10 +42,7 @@ def _u16le(data: bytes, off: int) -> int:
 
 def smush_decode_rle(buf: bytearray, src: bytes, width: int, height: int, pitch: int) -> None:
     """Port of ScummVM ``smushDecodeRLE`` (codec1.cpp) with ``left = top = 0``."""
-    src_off = 0
-    for row in range(height):
-        bomp_decode_line(buf, row * pitch, src, src_off + 2, width, set_zero=False)
-        src_off += _u16le(src, src_off) + 2
+    bomp_decode_rows(buf, pitch, src, 0, width, height, set_zero=False)
 
 
 def nut_codec21(buf: bytearray, src: bytes, width: int, height: int, pitch: int) -> None:

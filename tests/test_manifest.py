@@ -5,8 +5,7 @@ import digart
 from PIL import Image
 
 from digart.manifest import AssetRecord, ManifestBuilder, palette_hash, rec_id
-from digart.pngout import write_indexed_png, write_san_png
-from digart.san import SanFrame
+from digart.pngout import write_indexed_png
 
 W, H = 320, 200
 
@@ -91,10 +90,10 @@ def test_manifest_schema_counts_and_palette_sidecars(tmp_path):
 
 def test_png_writers(tmp_path):
     pal, index = make_pal(), make_index()
-    write_san_png(tmp_path, Path("san/SQ1/00000.png"), SanFrame(index, pal))
+    write_indexed_png(tmp_path, Path("san/SQ1/00000.png"), index, W, H, pal, False)
     im = Image.open(tmp_path / "san/SQ1/00000.png")
     assert im.mode == "RGB" and im.size == (W, H)
-    assert im.tobytes() == rgb_of(index, pal)            # SAN PNG is lossless RGB
+    assert im.tobytes() == rgb_of(index, pal)            # opaque PNG is lossless RGB
 
     write_indexed_png(tmp_path, Path("la1/room.png"), index, W, H, pal, transparent0=True)
     im = Image.open(tmp_path / "la1/room.png")
@@ -116,7 +115,7 @@ def test_determinism_byte_identical(tmp_path):
         d = tmp_path / name
         b = ManifestBuilder(d)
         assert b.record_palette(pal) == h
-        write_san_png(d, Path("san/SQ1/00000.png"), SanFrame(index, pal))
+        write_indexed_png(d, Path("san/SQ1/00000.png"), index, W, H, pal, False)
         b.add(san_record(h, 0))
         b.finalize("2026-09-24T12:00:00Z", "deadbeef")
 
