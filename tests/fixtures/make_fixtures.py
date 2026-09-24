@@ -37,3 +37,17 @@ def frame(*subs: bytes) -> bytes:
 def san(frames: list[bytes], palette: bytes = bytes(768)) -> bytes:
     body = be(b"AHDR", ahdr(palette=palette, num_frames=len(frames))) + b"".join(frames)
     return b"ANIM" + struct.pack(">I", 8 + len(body)) + body
+
+def mk_nut(glyphs: list[tuple[int, int, int, bytes]], palette: bytes = bytes(768)) -> bytes:
+    """Build a NUT font: ANIM + AHDR + one FRME(FOBJ) per ``(codec, w, h, payload)``.
+
+    No metadata chunk; ``numChars`` at AHDR+10 (payload+2) and the palette at
+    payload[6:774], per the verified layout. The ANIM length is the font-body
+    length (AHDR onward), unlike ``san`` which adds the 8-byte ANIM header.
+    """
+    frames = []
+    for codec, w, h, payload in glyphs:
+        fobj = be(b"FOBJ", struct.pack("<HhhHHHH", codec, 0, 0, w, h, 0, 0) + payload)
+        frames.append(be(b"FRME", fobj))
+    body = be(b"AHDR", ahdr(palette=palette, num_frames=len(glyphs))) + b"".join(frames)
+    return b"ANIM" + struct.pack(">I", len(body)) + body
