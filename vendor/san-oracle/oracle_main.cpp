@@ -7,10 +7,21 @@
 //
 // `san-oracle dump FILE` writes one record per FRME, in file order:
 //   b"FRMK" + u16LE(w) + u16LE(h) + pal[768] + index[w*h]
-// Exit 2 + stderr message on a malformed stream.
+//
+// `san-oracle nut FILE` writes one record per NUT glyph, in file order, from
+// the vendored nut_renderer.cpp layout (ANIM/AHDR + one FRME/FOBJ per glyph):
+//   b"NUTG" + u16LE(w) + u16LE(h) + u8 transparency + pal[768] + index[w*h]
+// Codec 1 -> Scumm::smushDecodeRLE (vendored codec1.cpp); codec 44 -> the
+// sed-extracted nut_codec21 body. Exit 2 + stderr message on a malformed
+// stream or unknown codec.
 
 #include "shim.h"
 #include "scumm/smush/codec37.h"
+
+namespace Scumm {
+void smushDecodeRLE(byte *dst, const byte *src, int left, int top, int width, int height, int pitch);
+}
+void nut_codec21(byte *dst, const byte *src, int width, int height, int pitch);
 
 namespace {
 
@@ -117,32 +128,90 @@ void emitFrame() {
 	fwrite(g_buf, 1, kWidth * kHeight, stdout);
 }
 
-} // namespace
+// kDefaultTransparentColor / kSmush44TransparentColor (nut_renderer.h:37-38).
+const uint8 kDefaultTransparentColor = 0;
+const uint8 kSmush44TransparentColor = 2;
 
-int main(int argc, char **argv) {
-	if (argc != 3 || strcmp(argv[1], "dump") != 0) {
-		fprintf(stderr, "usage: san-oracle dump FILE\n");
-		return 2;
+void emitNutGlyph(const uint8 *glyph, int width, int height, uint8 transparency) {
+	fwrite("NUTG", 1, 4, stdout);
+	uint8 hdr[5];
+	hdr[0] = (uint8)(width & 0xff);
+	hdr[1] = (uint8)((width >> 8) & 0xff);
+	hdr[2] = (uint8)(height & 0xff);
+	hdr[3] = (uint8)((height >> 8) & 0xff);
+	hdr[4] = transparency;
+	fwrite(hdr, 1, 5, stdout);
+	fwrite(g_pal, 1, 768, stdout);
+	fwrite(glyph, 1, (size_t)width * height, stdout);
+}
+
+// NUT font walk: ANIM (u32BE length; payload after the 8-byte header is the
+// font data) -> AHDR (palette at payload[6:774]; numChars = u16LE@10) -> one
+// FRME per glyph, each containing exactly one FOBJ. No metadata chunk.
+void runNut(const uint8 *data, long n, const char *path) {
+	if (n < 8 || memcmp(data, "ANIM", 4) != 0)
+		error("missing ANIM magic in %s", path);
+	uint32 animLen = READ_BE_UINT32(data + 4);
+	if ((long)animLen > n - 8)
+		error("ANIM length %u overruns file in %s", animLen, path);
+	const uint8 *font = data + 8;
+	long fontLen = (long)animLen;
+
+	if (fontLen < 8 || memcmp(font, "AHDR", 4) != 0)
+		error("missing AHDR chunk in %s", path);
+	uint32 ahdrSize = READ_BE_UINT32(font + 4);
+	if (ahdrSize < 0x306 || 8 + (long)ahdrSize > fontLen)
+		error("bad AHDR chunk in %s", path);
+	// AHDR chunk: palette at payload[6:774]; numChars = u16LE@10 (chunk start).
+	memcpy(g_pal, font + 8 + 6, 0x300);
+	uint32 numChars = READ_LE_UINT16(font + 10);
+
+	long off = 8 + (long)ahdrSize + (ahdrSize & 1);
+	for (uint32 i = 0; i < numChars; ++i) {
+		if (off + 8 > fontLen)
+			error("truncated FRME %u in %s", i, path);
+		if (memcmp(font + off, "FRME", 4) != 0)
+			error("no FRME chunk %u in %s", i, path);
+		uint32 frmeSize = READ_BE_UINT32(font + off + 4);
+		long fobj = off + 8;
+		if (fobj + 22 > fontLen)
+			error("truncated FOBJ %u in %s", i, path);
+		if (memcmp(font + fobj, "FOBJ", 4) != 0)
+			error("no FOBJ chunk in FRME %u in %s", i, path);
+
+		uint16 codec = READ_LE_UINT16(font + fobj + 8);
+		int width = READ_LE_UINT16(font + fobj + 14);
+		int height = READ_LE_UINT16(font + fobj + 16);
+		const uint8 *glyphData = font + fobj + 22;
+
+		uint8 transparency;
+		if (codec == 44)
+			transparency = kSmush44TransparentColor;
+		else if (codec == 1)
+			transparency = kDefaultTransparentColor;
+		else
+			error("unknown NUT codec %u in %s", codec, path);
+
+		size_t size = (size_t)width * height;
+		byte *glyph = (byte *)malloc(size ? size : 1);
+		if (!glyph)
+			error("out of memory");
+		memset(glyph, transparency, size);
+		if (codec == 1)
+			Scumm::smushDecodeRLE(glyph, glyphData, 0, 0, width, height, width);
+		else
+			nut_codec21(glyph, glyphData, width, height, width);
+		emitNutGlyph(glyph, width, height, transparency);
+		free(glyph);
+
+		off += 8 + (long)frmeSize + (frmeSize & 1);
 	}
+}
 
-	FILE *f = fopen(argv[2], "rb");
-	if (!f)
-		error("cannot open %s", argv[2]);
-	if (fseek(f, 0, SEEK_END) != 0)
-		error("cannot seek %s", argv[2]);
-	long n = ftell(f);
-	if (n < 8)
-		error("file too small: %ld bytes", n);
-	rewind(f);
-	uint8 *data = (uint8 *)malloc((size_t)n);
-	if (!data)
-		error("out of memory");
-	if (fread(data, 1, (size_t)n, f) != (size_t)n)
-		error("short read on %s", argv[2]);
-	fclose(f);
-
+// dump mode: container walk (ANIM + tag + u32BE size, stride +8+size+(size&1)).
+void runDump(const uint8 *data, long n, const char *path) {
 	if (memcmp(data, "ANIM", 4) != 0)
-		error("missing ANIM magic in %s", argv[2]);
+		error("missing ANIM magic in %s", path);
 
 	long off = 8;
 	while (off + 8 <= n) {
@@ -164,7 +233,39 @@ int main(int argc, char **argv) {
 		off += 8 + (long)size + (size & 1);
 	}
 
-	free(data);
 	delete g_decoder;
+	g_decoder = nullptr;
+}
+
+} // namespace
+
+int main(int argc, char **argv) {
+	if (argc != 3 || (strcmp(argv[1], "dump") != 0 && strcmp(argv[1], "nut") != 0)) {
+		fprintf(stderr, "usage: san-oracle {dump|nut} FILE\n");
+		return 2;
+	}
+
+	FILE *f = fopen(argv[2], "rb");
+	if (!f)
+		error("cannot open %s", argv[2]);
+	if (fseek(f, 0, SEEK_END) != 0)
+		error("cannot seek %s", argv[2]);
+	long n = ftell(f);
+	if (n < 8)
+		error("file too small: %ld bytes", n);
+	rewind(f);
+	uint8 *data = (uint8 *)malloc((size_t)n);
+	if (!data)
+		error("out of memory");
+	if (fread(data, 1, (size_t)n, f) != (size_t)n)
+		error("short read on %s", argv[2]);
+	fclose(f);
+
+	if (strcmp(argv[1], "dump") == 0)
+		runDump(data, n, argv[2]);
+	else
+		runNut(data, n, argv[2]);
+
+	free(data);
 	return 0;
 }
