@@ -96,17 +96,23 @@ codecs `1` (BIGFONT) and `44` (the rest) — codec 21 never occurs, and 44 is de
 the emitted RGBA PNG and every other index is opaque.
 
 ### 4.3 SCUMM v7 `DIG.LA0`/`DIG.LA1`
-`LA0` (16 KB) is the v7 index: `RNAM` (u16LE id + 9 name bytes XOR 0xFF), `MAXS`,
-`DROO`, `DSCR`, `DSOU`, `DCOS`, `DCHR`, `DOBJ`, `AARY`, `ANAM`, per
-`engines/scumm/resource.cpp` (v7 data is unencrypted). `LA1` (88.6 MB) is a single
-`LECF` container: a `LOFF` offset directory (u16LE count + (u32LE offset, u8 kind)
-entries, ascending) followed by one `ROOM` chunk per entry. Room children (`RMHD`,
-`CYCL`, `TRNS`, `PALS`, `WRAP`, `OFFS`, `APAL`, plus bitmap-bearing chunks) are walked as
-upstream `engines/scumm/room.cpp` does; bitmaps are decoded via the same BOMP row path
-with the room's own 8-bit `APAL`/`PALS` palette; index 0 → alpha. Scripts, sounds,
-charsets and arrays are recognized and skipped. The exact bitmap tag inventory is
-captured by the §8 census probe before the decoder ships; every decodable bitmap is
-extracted, every other chunk logged.
+`LA0` (16 KB) is the v7 index (`RNAM`, `MAXS`, `DROO`, `DSCR`, `DSOU`, `DCOS`, `DCHR`,
+`DOBJ`, `AARY`, `ANAM`) per `engines/scumm/resource.cpp` (v7 data is unencrypted). `LA1`
+(88.6 MB) is a `LECF` container holding a `LOFF` offset directory followed by `LFLF`
+blocks. LA1 chunk sizes **include the 8-byte header** (`next = chunk_start + size +
+(size & 1)`) — the opposite of SAN. `LOFF` payload is a `u16LE` header value followed by
+entries of `u32LE offset + u8 kind`, stride 5; there are 110 entries (kinds 2..111) whose
+offsets point at `LFLF` payloads, i.e. the `ROOM` chunk.
+
+Room children (`RMHD`, `CYCL`, `TRNS`, `PALS`, `RMIM`, `OBIM`, `OBCD`, …) are walked with
+the header-inclusive stride. Room and object images are **SMAP** bitmaps, not BOMP rows:
+`RMIM`/`OBIM` → `IM00` → `'SMAP' + u32BE size` + a `u32LE` row-offset table; the codec
+byte is at `payload[row_offset[0]]`, decoded by `Gdi::decompressBitmap` plus the matching
+`drawStrip*` routine (`engines/scumm/gfx.cpp`). The codec set is dominated by
+`RMAJMIN`/`ZIGZAG` variants plus `RAW256`. The room palette comes from `PALS`/`APAL`.
+Scripts, sounds, charsets and arrays are recognized and skipped. The exact tag inventory
+and codec set are captured by the §8 census probe (`docs/la1-census.txt`) before the
+decoder ships; every decodable bitmap is extracted, every other chunk logged.
 
 Where the shipped GOG 1.7.0 fork differs from upstream on any of these paths, the
 differential gate (§7) fails loudly; the pinned commit is chosen so it passes.
@@ -191,15 +197,19 @@ thedig-textures verify  [--out <dir>]
 - `tools/diff_oracle.py`: for all 55 `.SAN` files, decode with `digart/san.py` and with
   the oracle binary; assert identical frame count, dimensions, palette bytes, and
   indexed pixel bytes. Any mismatch prints file, frame index, first differing offset.
+- `tools/diff_nut.py`: for all 6 `.NUT` files, decode with `digart/nut.py` and with
+  `san-oracle nut`; assert identical glyph count, dimensions, transparency index,
+  palette bytes, and glyph pixels.
 - `make verify` runs unit tests then the full differential pass. Acceptance requires
-  55/55 files, 0 byte mismatches.
-- `NUT` correctness is byte-exact: `san-oracle nut FILE` emits per-glyph records
-  (dimensions, transparency index, palette, glyph pixels) built from the vendored
-  `codec1.cpp` and the extracted `codec21` body; `tools/diff_nut.py` compares them
-  against `digart/nut.py` over all 6 `.NUT` files (0 mismatches). `LA1` correctness
-  reuses the same row-BOMP oracle function plus hermetic fixtures (§8) and manual proof:
-  documented comparison of first frames of `SQ1`/menu screens against the running game
-  (recorded under `docs/proofs/` after first run).
+  55/55 SAN files, 6/6 NUT files, and every LA1 image the oracle can decode, with 0 byte
+  mismatches.
+- `LA1` correctness is byte-exact: `san-oracle la1 DIG.LA1` decodes room and object
+  SMAP images with strip decoders transcribed verbatim from `engines/scumm/gfx.cpp`;
+  `tools/diff_la1.py` compares them against `digart/la1.py` (0 mismatches over every
+  image the oracle can decode). `docs/la1-census.txt` is the normative inventory of the
+  room-child tags, SMAP codec set, and palettes. Manual proof: documented comparison of
+  first frames of `SQ1`/menu screens against the running game (recorded under
+  `docs/proofs/` after first run).
 
 ## 8. Testing
 
@@ -249,8 +259,8 @@ Each module is independently testable and has one owner per format. Runtime deps
 ## 12. Success criteria (definition of done)
 
 1. `thedig-textures extract` completes on the user's bundle with zero unexpected errors.
-2. `make verify`: 55/55 SAN files and 6/6 NUT files byte-identical to the oracle; unit
-   tests green.
+2. `make verify`: 55/55 SAN files, 6/6 NUT files, and every decodable LA1 image
+   byte-identical to the oracle; unit tests green.
 3. Every `.NUT` image and every decodable `LA1` bitmap present under `out/` and listed
    in `manifest.json`; each manifest entry's `path` exists and its `width`/`height`/
    `palette` match the file on disk.

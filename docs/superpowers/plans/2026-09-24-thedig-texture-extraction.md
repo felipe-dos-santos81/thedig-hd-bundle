@@ -40,7 +40,8 @@ digart/pngout.py                   deterministic PNG + palette-strip writers
 digart/cli.py                      extract/verify, preflight, --jobs orchestration
 tools/diff_oracle.py               python-vs-C++ differential over all .san files
 tools/diff_nut.py                  python-vs-C++ differential over all .nut files
-tools/la1_census.py                DIG.LA1 chunk-tag census (Task 9 Step 1)
+tools/diff_la1.py                  python-vs-C++ differential over DIG.LA1 bitmaps
+tools/la1_census.py                DIG.LA1 census + SMAP reconnaissance (Task 9)
 vendor/san-oracle/UPSTREAM.txt     pinned scummvm commit SHA + file hashes
 vendor/san-oracle/upstream/engines/scumm/{bomp.h,bomp.cpp,nut_renderer.cpp}   verbatim upstream
 vendor/san-oracle/upstream/engines/scumm/smush/{codec1.cpp,codec37.cpp,codec37.h,smush_player.cpp}
@@ -739,19 +740,85 @@ Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored
 
 ---
 
-### Task 9: SCUMM v7 LA1 bitmaps
+### Task 9: LA1 census + SMAP reconnaissance
 
 **Files:**
-- Create: `tools/la1_census.py`, `docs/la1-census.txt`, `digart/la1.py`, `tests/test_la1.py`
+- Create: `tools/la1_census.py`, `docs/la1-census.txt`
 
 **Interfaces:**
-- Consumes: `bomp_decode_line`, `DecodeError`.
-- Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent0: bool)`; `iter_bitmaps(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`.
+- Produces: a committed census (`docs/la1-census.txt`) that is the normative table for Tasks 10-11.
 
-- [ ] **Step 1: Census before code.** `tools/la1_census.py` walks: `LECF`(top chunk of DIG.LA1, payload contains `LOFF` + ROOMs) → `LOFF`: `u16LE count` (verified 367) + entries `u32LE offset + u8 kind` (verified ascending on the real file: 580, 181722, 1965645, 2000936). For each entry with `la1[off:off+4]==b'ROOM'`: BE-walk its 2-level children printing `tag size @offset` (first room children verified: `RMHD CYCL TRNS PALS WRAP OFFS APAL`). Output → `docs/la1-census.txt` via `python3 tools/la1_census.py > docs/la1-census.txt`. Also census entries whose kind byte != ROOM (which are those? costumes/sounds per `LOFF` kind byte — record the tag each offset lands on, one line per entry, plus the tag histogram). **Commit the census output with this task; it is the normative table for Step 2.**
-- [ ] **Step 2: Implement** `digart/la1.py` from the census: parse `ROOM` children; for each bitmap-class tag found in the census, decode BOMP row data (`w,h` from `RMHD` or the tag's own header per census record — whichever the census proves) with `set_zero=True` for backgrounds (room `APAL` 768B 8-bit palette, fallback first `PALS` table) and `set_zero=False`-style semantics only for overlay classes (set `transparent0=True`). Scripts/sounds/charsets/arrays/`CYCL`/`TRNS`/`WRAP`/`OFFS` → recognized-and-skip. Any chunk > 4096 bytes with unrecognized tag → `errors.append(DecodeError("DIG.LA1", off, f"unhandled {tag!r}"))`.
-- [ ] **Step 3: Tests**: synthetic LA0/LA1 (LECF+LOFF+ROOM+APAL+bg) asserting pixels + palette; `@game` test: full `iter_bitmaps` run prints counts; assert `len(bitmaps) >= 0` and `len(errors) / total_room_children < 0.10` (10% ceiling — census-driven, may tighten after census review).
-- [ ] **Step 4: PASS + commit** `"feat: SCUMM v7 LA1 bitmap extraction"`.
+**Verified reality (controller-verified on the real `DIG.LA1`, 88,673,344 bytes) — the plan's earlier LA1 model was wrong; this task documents the true structure:**
+
+- **LA1 chunk sizes include the 8-byte header**: `next = chunk_start + size + (size & 1)`. Verified: `LOFF` size 564 → next at `8+564=572` (`LFLF`); `LFLF` size 181142 → next at `181714`; `RMHD` size 18 → next at `606` (`CYCL`). This is the opposite of SAN (payload-only).
+- `LECF` → `LOFF` + `LFLF` blocks. `LOFF` payload = a `u16LE` header value (367 — **not** the entry count) + entries of `u32LE offset + u8 kind`, stride 5. **110 entries**, kinds `2..111` sequential, each offset landing on a `ROOM` tag that is the payload of an `LFLF` at `offset-8`.
+- `ROOM` children (correct stride): `RMHD`(110), `CYCL`, `TRNS`, `PALS`, `RMIM`(110), `OBIM`(841), `OBCD`(239), `EXCD`, `NCD`, `XCD`, `ENCD`, `LSC`/`LSCR`/`NLSC`/`SCR`. `RMHD` payload (LE u16) = `(730, 0, 320, 200, 1)` → room 320×200.
+- Room/object images are **SMAP**, not BOMP: `RMIM` → `RMIH` + `IM00`; `IM00` payload = `'SMAP' + u32BE size` + a `u32LE` row-offset table starting at `payload+8`; the codec byte is at `payload[row_offset[0]]`. The v7 `drawStrip` branch (`gfx.cpp:2462-2465`) reads `smapLen = READ_BE_UINT32(smap_ptr+4)` and `offset = READ_LE_UINT32(smap_ptr + stripnr*4 + 8)`.
+- RMIM codec histogram (controller scan): `108,106,107,104,105,127` (RMAJMIN/HT variants), `16,17,18,26,27,28` (ZIGZAG V/H), `37` (ZIGZAG_VT7), `1` (RAW256). `OBIM` images need the same scan (their `IM00` may be nested differently).
+- Palettes: `PALS` (110, ~804 bytes: multiple tables) and `APAL`.
+- The naive child walk still desyncs in a few rooms; the census must report every desync with its offset.
+
+- [ ] **Step 1: Write `tools/la1_census.py`** using the header-inclusive stride above. It must emit, deterministically:
+  1. The `LECF`/`LOFF`/`LFLF`/`ROOM` layout, the LOFF entry count, and the `LFLF` count.
+  2. Per-`ROOM` child inventory (`tag`, `count`, total bytes), plus every desync (`room offset`, byte offset, tag read).
+  3. For every `RMIM`/`OBIM` `IM00`: the SMAP `smaplen`, the codec byte, the row-offset-table length, and image dimensions; plus codec histograms.
+  4. `PALS`/`APAL` counts, sizes, and how many 768-byte tables each `PALS` holds.
+  5. Which chunks are bitmap-bearing vs script/audio/auxiliary, as a definitive tag→class table.
+- [ ] **Step 2:** `python3 tools/la1_census.py > docs/la1-census.txt`, inspect it, and **commit** `docs/la1-census.txt` (this is the normative table). Commit `"chore: DIG.LA1 census + SMAP reconnaissance"`.
+
+---
+
+### Task 10: LA1 SMAP oracle
+
+**Files:**
+- Modify: `vendor/san-oracle/oracle_main.cpp`, `vendor/san-oracle/build.sh`; Create: `tools/diff_la1.py`
+
+**Interfaces:**
+- Produces: `san-oracle la1 FILE` → stdout records `b"LA1B" + u16LE(w,h) + u8 transparent + pal[768] + index[w*h]`, one per decodable bitmap (room images and object images) in file order, plus `b"LA1E" + u32LE(off) + <reason>` records for undecodable resources (so the Python side can match the error set).
+- Decoders are transcribed **verbatim** from `engines/scumm/gfx.cpp` (`vendor` it in this task): `Gdi::decompressBitmap` (`gfx.cpp:2963`) and the strip decoders required by the Task 9 codec histogram (`drawStripRaw`, `drawStripBasicV`, `drawStripBasicH`, `drawStripComplex` including its run-majmin variant, and the `MajMinCodec`/`MajMinCodec::setupBitReader` helper), with `_decomp_shr = code % 10` and `_decomp_mask = 0xFF >> (8 - _decomp_shr)`. Do not re-implement the codecs.
+
+- [ ] **Step 1:** Vendor `engines/scumm/gfx.cpp` + `gfx.h` (record in `UPSTREAM.txt`).
+- [ ] **Step 2:** Add the `la1` mode: walk `LECF`/`LOFF`/`LFLF`/`ROOM` with the header-inclusive stride, decode each `RMIM`/`OBIM` `IM00` SMAP via the transcribed decoders, resolve the palette (`PALS`/`APAL`), and emit records. Unknown codec → an `LA1E` record (not `error()`), so the Python side can match.
+- [ ] **Step 3:** `tools/diff_la1.py` (same shape as the other differentials) — compares `san-oracle la1` against `digart.la1.iter_bitmaps` (Task 11); fails until Task 11; do not weaken it.
+- [ ] **Step 4:** Gate: `make check` green; `san-oracle la1 DIG.LA1` exits 0 and its bitmap count matches the Task 9 census. Commit `"chore: LA1 SMAP oracle"`.
+
+---
+
+### Task 11: LA1 bitmap extraction + differential
+
+**Files:**
+- Create: `digart/la1.py`, `tests/test_la1.py`; Modify: `Makefile` (add `tools/diff_la1.py` to `verify`)
+
+**Interfaces:**
+- Consumes: `DecodeError`, the `san-oracle la1` records, the Task 9 census.
+- Produces: `La1Bitmap(name: str, index: bytes, width: int, height: int, palette: bytes, transparent0: bool)`; `iter_bitmaps(la0: bytes, la1: bytes, errors: list[DecodeError]) -> Iterator[La1Bitmap]`. `name` is the resource stem + index (e.g. `room0042`, `obj0123`).
+
+Rules:
+- Walk `LECF`/`LOFF`/`LFLF`/`ROOM` with the header-inclusive stride; extract `RMIM` and `OBIM` images.
+- Port the SMAP path from the vendored `gfx.cpp` (`decompressBitmap` + the strip decoders the census proves are used). Faithful transcription; no added bounds behavior.
+- Palette: room `PALS`/`APAL` per the census; `transparent0` is true only for the transparent strip variants (`*_HT*`/`*_VT*`).
+- Script/audio/auxiliary chunks (`OBCD`, `EXCD`, `NCD`, `XCD`, `ENCD`, `SCR`, `LSC`, `CYCL`, `TRNS`, `WRAP`, `OFFS`, …) are recognized and skipped; anything unhandled is appended to `errors` with its offset.
+
+- [ ] **Step 1: Tests**: synthetic LA1 (`LECF`+`LOFF`+`LFLF`+`ROOM`+`RMIM`/`IM00`+`SMAP` with a RAW256 strip) asserting pixels + palette; `@game` test: `iter_bitmaps` over the real `DIG.LA0`/`DIG.LA1` prints counts and the error set is within the census-documented set.
+- [ ] **Step 2:** `make check` green; `make verify` → **LA1 100% of the oracle's decodable images byte-exact**, plus 55/55 SAN and 6/6 NUT. The oracle is authoritative — fix `digart/la1.py`, never the oracle.
+- [ ] **Step 3: Commit** `"feat: SCUMM v7 LA1 bitmap extraction; byte-exact vs oracle"`.
+
+---
+
+### Task 12: CLI wiring, end-to-end, proofs
+
+**Files:**
+- Create: `digart/cli.py`, `tests/test_cli.py`; Modify: `README.md`, `docs/proofs/`
+
+**Interfaces:**
+- Consumes: `iter_frames`, `iter_images`, `iter_bitmaps`, `ManifestBuilder`, `rec_id`, `write_*_png`, `DecodeError`, `palette_hash`.
+- Produces: `main(argv: list[str] | None = None) -> int`; exit 0/1/2 per spec §6.
+
+- [ ] **Step 1: Implement `cli.py`**: argparse; `GAME_DEFAULT = str(Path.home() / "Documents" / "The Dig®.app")`; `extract`: preflight (required relative paths under `Contents/Resources/game/game`: `VIDEO/`, `DIG.LA0`, `DIG.LA1`; missing → print list, exit 2; disk: `shutil.disk_usage(out).free` vs `(15 if san else 0 + 1) << 30`, `--force` bypasses); build task list from `--only`; `ProcessPoolExecutor(max_workers=--jobs or min(4, os.cpu_count()))` mapping each file `_extract_one(path, out) -> tuple[list[dict], list[dict]]` — worker opens the file **read-only** with `Path.read_bytes`, decodes, writes PNGs under `out/<kind>/<STEM>/`, returns manifest dicts + `to_dict()` errors; parent merges (sorted by `(source, index)`), `ManifestBuilder.finalize`, `_errors.json` only when non-empty, prints summary. `verify`: run all three differentials (`tools/diff_oracle.py`, `tools/diff_nut.py`, `tools/diff_la1.py`) — exit non-zero on any mismatch.
+- [ ] **Step 2: Failing tests** `tests/test_cli.py`: fake-game dir (tmp_path with synthetic 2-frame SAN + synthetic .nut built by fixtures, plus empty `DIG.LA0/LA1` placeholders that yield zero bitmaps and zero errors); `main(["extract", "--game", fake_app, "--out", str(out), "--jobs", "1"])` → 0; manifest ids + `san:sq1:00001` present. Missing bundle → 2, stderr mentions `VIDEO`. Errors fixture (truncated SAN bytes) → `_errors.json` + exit 1.
+- [ ] **Step 3:** `make check` green, then the real run: `make verify` → **55/55 SAN + 6/6 NUT + LA1 byte-exact** (required; iterate the Python ports if not). Then real `thedig-textures extract` on the user's bundle; report total frames/PNGs/bytes; commit nothing from `out/` (gitignored).
+- [ ] **Step 4: Proofs**: copy three first frames (`san/SQ1/00000.png`, `san/SQ10/00000.png`, `san/PIGOUT/00000.png`) into `docs/proofs/first-frames/`; write `docs/proofs/README.md` comparing to an in-game screenshot you take once (launch the game, pause on screen 1, macOS `cmd-shift-4` — or state the user-supplied screenshot path): document that HUD/dialogue text is a runtime overlay deliberately excluded; list which on-screen elements in the screenshot should match frame pixels (background art) vs overlay (text, cursor, item bar). Commit `"docs: first-frame proofs vs in-game screens"`.
+- [ ] **Step 5:** Finalize `README.md` (real commands + manifest schema pointer + regeneration handoff note). `git add -A && git commit -m "feat: end-to-end CLI with full-bundle verification"`.
 
 ---
 
@@ -797,9 +864,9 @@ def nut_codec21(buf, off, src, s_off, w, h, pitch):
 ```
 The vendored `NutRenderer::codec21` (`nut_renderer.cpp:65-94`) is authoritative; this appendix is a reading aid. Note the skip advances by **pixels** (`o += skip`), not rows.
 
-## Plan Self-Review (re-checked after the codec-37 and NUT re-plans)
+## Plan Self-Review (re-checked after the codec-37, NUT, and LA1 re-plans)
 
-- Spec coverage: §2→T10 preflight; §3→T3/T5 (SAN), T7/T8 (NUT), T9 (LA1); §4→T2-T5, T7/T8, T9 (format rules restated verbatim in each task); §5→T6 (+ ids via `rec_id`); §6→T10; §7→T4/T5 (SAN oracle→port), T7/T8 (NUT oracle→port); §8→per-task test steps + T10 Step 3; §9→error paths in every module; §11→T10 disk preflight; §12→T10 Steps 3-4.
-- Verified against the bundle: all 12,637 SAN `FOBJ` are codec 37 (no 1/3/20, no `ZFOB`); 12,638 `FRME`; all `IACT` audio-only. NUT = `AHDR` + one `FRME`/`FOBJ` per glyph (no metadata chunk); codecs 1 and 44; transparency 0/2 by codec; 1403 glyphs. The plan matches both.
-- Placeholders: none — every code step carries real code or a real command with its expected result. Steps that instruct "transcribe the vendored function" (T4 `oracle_main.cpp`, T5 `codec37.py`, T7 oracle `nut` mode, T8 `nut.py`) name the vendored file as the content.
-- Type consistency: `iter_frames(data, source)` (T3→T5→T10), `SanFrame.index/.palette` (T3→T6), `DeltaBlocksDecoder.decode(dst, src)` (T5), `san-oracle dump`/`nut` records (T4/T7→T5/T8), `NutImage.transparent` (T8→T10), `iter_bitmaps(la0, la1, errors)` (T9→T10), `AssetRecord`/`rec_id` (T6→T10), `DecodeError.to_dict` (T1→T6 `_errors.json`).
+- Spec coverage: §2→T12 preflight; §3→T3/T5 (SAN), T7/T8 (NUT), T9-T11 (LA1); §4→T2-T5, T7/T8, T9-T11; §5→T6 (+ ids via `rec_id`); §6→T12; §7→T4/T5 (SAN oracle→port), T7/T8 (NUT), T10/T11 (LA1); §8→per-task test steps + T12 Step 3; §9→error paths in every module; §11→T12 disk preflight; §12→T12 Steps 3-4.
+- Verified against the bundle: SAN — 12,637 `FOBJ` all codec 37, 12,638 `FRME`, `IACT` audio-only. NUT — `AHDR` + one `FRME`/`FOBJ` per glyph, codecs 1/44, transparency 0/2, 1403 glyphs. LA1 — header-inclusive chunk sizes, `LECF`/`LOFF`(110 entries)/`LFLF`/`ROOM`, SMAP images with a `RMAJMIN`/`ZIGZAG`/`RAW256` codec mix. The plan matches all three.
+- Placeholders: none. Tasks that instruct "transcribe the vendored function" (T4/T10 `oracle_main.cpp`, T5 `codec37.py`, T7 oracle `nut` mode, T8 `nut.py`, T11 `la1.py`) name the vendored file as the content. Task 10/11 detail is bounded by the Task 9 census, which is committed before they run.
+- Type consistency: `iter_frames` (T3→T5→T12), `SanFrame` (T3→T6), `DeltaBlocksDecoder.decode` (T5), `san-oracle dump`/`nut`/`la1` (T4/T7/T10→T5/T8/T11), `NutImage.transparent` (T8→T12), `La1Bitmap`/`iter_bitmaps` (T11→T12), `AssetRecord`/`rec_id` (T6→T12), `DecodeError.to_dict` (T1→T6 `_errors.json`).
