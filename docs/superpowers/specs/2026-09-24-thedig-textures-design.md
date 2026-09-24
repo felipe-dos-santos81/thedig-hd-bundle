@@ -173,9 +173,10 @@ back-buffer) and for opaque room-background bitmaps (`RMIM` decoded with a
 non-transparent strip codec); it is `true` for `nut_image`, for `OBIM` object images, and
 for `AKOS` costume cels. When `has_alpha` is `true` the decoder's transparent index is
 normalized to palette index 0 with alpha 0 before writing, leaving every non-transparent
-pixel's RGB unchanged — the index is `0` for `OBIM`/Byle cels, `2` for NUT codec 44, and
-`255` for CDAT/MajMin cels. A regeneration pipeline can group, condition, and trace every
-PNG from this file alone.
+pixel's RGB unchanged — the index is `0` for Byle cels and transparent SMAP `OBIM`, `2`
+for NUT codec 44, and `255` for BOMP `OBIM` and CDAT/MajMin cels; non-transparent SMAP
+`OBIM` and `RMIM` stay opaque. A regeneration pipeline can group, condition, and trace
+every PNG from this file alone.
 
 ## 6. CLI
 
