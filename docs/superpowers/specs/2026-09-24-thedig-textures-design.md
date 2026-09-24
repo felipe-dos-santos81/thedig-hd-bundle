@@ -50,31 +50,55 @@ Out of scope (explicit non-goals)
 Byte-exact field layouts are defined by the upstream code, pinned at a commit in
 `vendor/` (see §7). The spec fixes structure and invariants, not a re-typed hex table.
 
-### 4.1 SAN (Westwood SMUSH)
-`ANIM` container with size/version header and chunked payload: `AHDR` (frame count,
-width, height, color depth, frame-rate hints), `PALE` (256-color palettes of 6-bit RGB
-components, scaled to 8-bit by ×4 with the same rounding the engine uses), `BONE`
-(scene/element metadata), `FRME` per frame, `SPR#` per element inside a frame, plus audio
-chunks (`SAHD`/`SND `) which the tool skips. Frames are built by running the opcode-RLE
-sprite streams onto the back buffer: opcodes encode copy-skip runs, solid runs,
-palette-change runs, and pixel-delta runs; a designated index (or off-screen draw) acts
-as the color key. `digart/san.py` yields, per frame: `uint8` indexed buffer + active
-palette + set of transparent pixels.
+### 4.1 SAN (Westwood SMUSH — verified against the bundle and ScummVM's SmushPlayer)
+`ANIM` container (tag + u32BE total size) holding `AHDR` (u16LE version=2, u16LE
+numFrames, u16[4], 768-byte **8-bit RGB palette** at offset 6 — used verbatim, no 6-bit
+scaling, u16LE fps at 0x306) followed by one `FRME` per frame. Each `FRME` is a sequence
+of BE-tagged, BE-sized, even-padded sub-chunks:
+
+- `NPAL` — replace the full 768-byte palette.
+- `XPAL` — delta palette: u16LE ×2 (second = command); command 512 reads 768 signed u16
+  deltas and then a full palette; command 256 applies accumulated deltas
+  (`shifted += delta; color = clip(shifted >> 7)`), exactly as
+  `SmushPlayer::handleDeltaPalette`.
+- `FOBJ` — draw object: u16LE codec (1 or 3 → row-BOMP RLE; 20 → uncompressed), i16LE
+  left, i16LE top, u16LE width, u16LE height, 4 reserved LE bytes; payload = per row
+  [u16LE row-size][BOMP bytes]. BOMP `bompDecodeLine(setZero=false)`: literal bytes equal
+  to 0 leave the back-buffer pixel unchanged — for The Dig **index 0 is "keep previous
+  pixel"**, not transparency.
+- `ZFOB` — u32BE inflated size + zlib stream wrapping a `FOBJ`.
+- `PSAD`, `IACT`, `TRES`, `TEXT`, `STOR`, `FTCH`, `SKIP`, `LOAD`, `GOST` — audio, game
+  scripting, and font-overlay chunks: skipped. Text/HUD is a runtime overlay and is
+  deliberately **not** baked into extracted frames — clean video-buffer imagery is the
+  regeneration source.
+
+Extraction models the engine's back buffer: persistent 320×200 buffer; `FOBJ` objects
+whose size differs from the screen are skipped (the shipped engine does the same); after
+each `FRME`, the current buffer (indexed + active palette) is emitted as a frame, even
+when the frame changed nothing. `digart/san.py` yields `(indexed_bytes, palette)` per
+frame; SAN output PNGs are opaque RGB (no alpha).
 
 ### 4.2 NUT
-LucasArts `.nut` (as parsed by ScummVM's `engines/scumm/nut_renderer.cpp`): header,
-palette(s), and a per-glyph/image entry table with size and pixel data. Each entry is
-emitted as an RGBA PNG (entries that carry a transparent key get alpha).
+LucasArts `.nut` = an SMUSH `ANIM`/`AHDR` container (glyph count = u16LE at AHDR+10)
+followed by two chunks per glyph: metadata (glyph width u16LE @+14, height u16LE @+16)
+and a `FRME` with the glyph pixels (row-BOMP `FOBJ`, codec 1/21), per ScummVM's
+`NutRenderer::loadFont`. Glyph/icon index 0 **is** the transparent color → each glyph is
+emitted as RGBA PNG.
 
 ### 4.3 SCUMM v7 `DIG.LA0`/`DIG.LA1`
-Parse the `LA0` index: `RNAM`, `MAXS`, `DROO`, `DSCR`, `DSOU`, `DCOS`, `DCHR`, `DOBJ`,
-`ANAM` per `engines/scumm/resource.cpp` (v7 is unencrypted; `DIG.LA1` is the single data
-disk). Follow room offsets into `DIG.LA1`, walk room sub-chunks, and decode the
-bitmap-bearing chunks (v7 background/`bgbg` data and sprite/costume image blocks) with
-the BOMP/RLE path of `engines/scumm/gfx.cpp`. Room scripts, sound, and character
-definitions are recognized and skipped.
+`LA0` (16 KB) is the v7 index: `RNAM` (u16LE id + 9 name bytes XOR 0xFF), `MAXS`,
+`DROO`, `DSCR`, `DSOU`, `DCOS`, `DCHR`, `DOBJ`, `AARY`, `ANAM`, per
+`engines/scumm/resource.cpp` (v7 data is unencrypted). `LA1` (88.6 MB) is a single
+`LECF` container: a `LOFF` offset directory (u16LE count + (u32LE offset, u8 kind)
+entries, ascending) followed by one `ROOM` chunk per entry. Room children (`RMHD`,
+`CYCL`, `TRNS`, `PALS`, `WRAP`, `OFFS`, `APAL`, plus bitmap-bearing chunks) are walked as
+upstream `engines/scumm/room.cpp` does; bitmaps are decoded via the same BOMP row path
+with the room's own 8-bit `APAL`/`PALS` palette; index 0 → alpha. Scripts, sounds,
+charsets and arrays are recognized and skipped. The exact bitmap tag inventory is
+captured by the §8 census probe before the decoder ships; every decodable bitmap is
+extracted, every other chunk logged.
 
-Where the shipped GOG 1.7.0 fork differs from upstream on any of these three paths, the
+Where the shipped GOG 1.7.0 fork differs from upstream on any of these paths, the
 differential gate (§7) fails loudly; the pinned commit is chosen so it passes.
 
 ## 5. Output layout
@@ -86,7 +110,7 @@ out/
   san/<NAME>/<frame:05d>.png        # e.g. san/SQ1/00000.png
   nut/<STEM>/img_<entry:03d>.png    # icon/glyph sheets per .nut file
   la1/<resource-name>[_<i>].png     # embedded room/sprite bitmaps
-  palettes/<hash>.json              # 256×[r,g,b] 8-bit table + 6-bit source table
+  palettes/<hash>.json              # 256×[r,g,b] 8-bit color table
   palettes/<hash>.png               # 256×1 palette strip for visual conditioning
   manifest.json
   _errors.json                      # written only if errors occurred
@@ -121,8 +145,10 @@ PNG writing strips timestamps so output is reproducible run-to-run.
 
 Rules: `id` = `"<kind-prefix>:<source-stem-lower>:<zero-padded index>"`; `frame`/`name`
 set per kind; `palette` is the hex sha256 of the 8-bit color table; entries are emitted
-in deterministic source-file/frame order. A regeneration pipeline can group, condition,
-and trace every PNG from this file alone.
+in deterministic source-file/frame order. `has_alpha` is always `false` for `san_frame`
+(opaque back-buffer; index 0 = keep-previous), and `true` for `nut_image`/`la1_bitmap`
+(index 0 = transparent). A regeneration pipeline can group, condition, and trace every
+PNG from this file alone.
 
 ## 6. CLI
 
@@ -142,25 +168,32 @@ thedig-textures verify  [--out <dir>]
 
 ## 7. Pixel-exact verification (oracle)
 
-- `vendor/san-oracle/` holds a pinned copy of upstream scummvm-tools SAN parsing
-  (`engines/scumm/compress_scumm_san.cpp` plus minimal stream helpers) and a `build.sh`
-  that compiles a single-file CLI: given a `.san`, it emits each frame's raw indexed
-  buffer and palette to stdout/`--out-dir`.
+- `vendor/san-oracle/` holds pinned upstream files that carry the decode logic in
+  self-contained functions: `engines/scumm/bomp.cpp` (`bompDecodeLine`) and
+  `engines/scumm/codec1.cpp` (`smushDecodeRLE`), plus a `oracle.cpp` harness that
+  transcribes the `FRME`/`FOBJ`/`NPAL`/`XPAL` walk and back-buffer rules from
+  `engines/scumm/smush/smush_player.cpp`. `build.sh` compiles it into `san-oracle`;
+  `san-oracle dump FILE` emits, per frame, a fixed binary record: dimensions, active
+  768-byte palette, indexed pixels. (Note: scummvm-tools' `compress_scumm_san` was
+  evaluated and rejected — it rewrites headers and strips audio but never decodes
+  pixels, so it cannot serve as an oracle.)
 - `tools/diff_oracle.py`: for all 55 `.SAN` files, decode with `digart/san.py` and with
   the oracle binary; assert identical frame count, dimensions, palette bytes, and
   indexed pixel bytes. Any mismatch prints file, frame index, first differing offset.
 - `make verify` runs unit tests then the full differential pass. Acceptance requires
   55/55 files, 0 byte mismatches.
-- `LA1`/`NUT` correctness is covered by hermetic fixtures (§8) plus manual proof:
-  documented comparison of first frames of `SQ1`/menu screens against the running game
-  (recorded under `docs/proofs/` after first run).
+- `LA1`/`NUT` correctness reuses the same oracle functions for their row-BOMP payload
+  paths, plus hermetic fixtures (§8) and manual proof: documented comparison of first
+  frames of `SQ1`/menu screens against the running game (recorded under `docs/proofs/`
+  after first run).
 
 ## 8. Testing
 
-- Unit tests (hermetic, no game copy needed): hand-built fixture generators under
-  `tests/fixtures/` produce a 1-frame SAN, a multi-frame SAN with mid-stream palette
-  swap, and a SAN using transparency; expected RGBA bytes pinned from the oracle once.
-  Same for one minimal `.nut` and one synthetic v7-style room chunk.
+- Unit tests (hermetic, no game copy needed): fixture generators under
+  `tests/fixtures/` produce a 1-frame SAN, a multi-frame SAN with a mid-stream `XPAL`
+  palette change, and a SAN whose BOMP rows carry index-0 keep-previous pixels; expected
+  indexed+palette bytes pinned from the oracle once. Same for one minimal `.nut` glyph
+  file and one synthetic `ROOM` chunk.
 - Integration tests marked `game` (skipped when the bundle is absent): run `extract
   --only san` over the three smallest `.san` files and `verify` over all 55.
 - Manifest tests: schema validation, deterministic ordering, id uniqueness.
