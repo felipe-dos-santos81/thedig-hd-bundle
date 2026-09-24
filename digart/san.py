@@ -1,0 +1,1 @@
+"""SAN animation decoding (stub)."""

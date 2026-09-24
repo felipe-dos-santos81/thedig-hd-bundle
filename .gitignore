@@ -1,0 +1,9 @@
+.venv/
+out/
+vendor/san-oracle/san-oracle
+vendor/san-oracle/*_core.cpp
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.superpowers/

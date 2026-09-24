@@ -1,0 +1,1 @@
+"""PNG output helpers (stub)."""
