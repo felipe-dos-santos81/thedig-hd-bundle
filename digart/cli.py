@@ -26,7 +26,7 @@ from pathlib import Path
 
 from .akos import iter_cels
 from .errors import DecodeError
-from .la1 import iter_bitmaps
+from .la1 import La1Bitmap, iter_bitmaps
 from .manifest import AssetRecord, ManifestBuilder, palette_hash, rec_id
 from .nut import iter_images
 from .pngout import write_indexed_png, write_san_png
@@ -190,14 +190,46 @@ def _normalize_transparent(index: bytes, palette: bytes, t: int) -> tuple[bytes,
     return bytes(index.translate(bytes(table))), bytes(pal)
 
 
+def _write_bitmap(out: Path, rel: Path, index: bytes, width: int, height: int,
+                  palette: bytes, transparent: int | None) -> tuple[bytes, bool]:
+    """Write an indexed bitmap, normalizing its transparent index to palette 0.
+
+    ``transparent`` is the decoder's transparent colour index, or ``None`` for an
+    opaque bitmap. When set, the index is swapped with 0 in both the pixel buffer
+    and the palette (leaving every non-transparent pixel's RGB unchanged) and the
+    PNG is written RGBA with alpha 0 at that index. Returns the palette actually
+    written (for the manifest/sidecar) and the ``has_alpha`` flag.
+    """
+    if transparent is None:
+        write_indexed_png(out, rel, index, width, height, palette, False)
+        return palette, False
+    index, palette = _normalize_transparent(index, palette, transparent)
+    write_indexed_png(out, rel, index, width, height, palette, True)
+    return palette, True
+
+
+def _la1_transparent_index(bmp: La1Bitmap) -> int | None:
+    """Transparent colour index of a DIG.LA1 bitmap, or ``None`` when opaque.
+
+    ``OBIM`` object sprites carry index 0 as transparent (both the SMAP and BOMP
+    variants); ``RMIM`` room backdrops are opaque unless their SMAP strip codec
+    was a transparent variant, in which case index 0 is transparent too. The
+    names are the decoder's contract (``digart.la1._process_room``): ``room<NNN>``
+    for RMIM, ``obj<NNN>_<state>`` for OBIM.
+    """
+    if bmp.name.startswith("obj"):
+        return 0
+    return 0 if bmp.transparent0 else None
+
+
 def _extract_nut(data: bytes, source: str, stem: str, out: Path,
                  records: list[dict], errors: list[dict]) -> None:
     for i, img in enumerate(_stream(iter_images(data, source), errors)):
-        index, palette = _normalize_transparent(img.index, img.palette, img.transparent)
         rel = Path("nut") / stem / f"img_{i:03d}.png"
-        write_indexed_png(out, rel, index, img.width, img.height, palette, True)
+        palette, has_alpha = _write_bitmap(out, rel, img.index, img.width,
+                                           img.height, img.palette, img.transparent)
         records.append(_record("nut", source, i, img.name, img.width,
-                               img.height, True, palette, rel))
+                               img.height, has_alpha, palette, rel))
 
 
 def _extract_la1(la0: bytes, la1: bytes, source: str, out: Path,
@@ -205,10 +237,11 @@ def _extract_la1(la0: bytes, la1: bytes, source: str, out: Path,
     local: list[DecodeError] = []
     for bmp in _stream(iter_bitmaps(la0, la1, local, source), errors):
         rel = Path("la1") / f"{bmp.name}.png"
-        write_indexed_png(out, rel, bmp.index, bmp.width, bmp.height,
-                          bmp.palette, bmp.transparent0)
+        palette, has_alpha = _write_bitmap(out, rel, bmp.index, bmp.width,
+                                           bmp.height, bmp.palette,
+                                           _la1_transparent_index(bmp))
         records.append(_record("la1", source, None, bmp.name, bmp.width,
-                               bmp.height, bool(bmp.transparent0), bmp.palette, rel))
+                               bmp.height, has_alpha, palette, rel))
     errors.extend(e.to_dict() for e in local)
 
 
@@ -217,10 +250,11 @@ def _extract_akos(la0: bytes, la1: bytes, source: str, out: Path,
     local: list[DecodeError] = []
     for cel in _stream(iter_cels(la0, la1, local, source), errors):
         rel = Path("la1") / f"{cel.name}.png"
-        write_indexed_png(out, rel, cel.index, cel.width, cel.height,
-                          cel.palette, cel.transparent0)
+        palette, has_alpha = _write_bitmap(out, rel, cel.index, cel.width,
+                                           cel.height, cel.palette,
+                                           cel.transparent)
         records.append(_record("akos", source, None, cel.name, cel.width,
-                               cel.height, bool(cel.transparent0), cel.palette, rel))
+                               cel.height, has_alpha, palette, rel))
     errors.extend(e.to_dict() for e in local)
 
 
@@ -255,6 +289,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         return 2
 
     out.mkdir(parents=True, exist_ok=True)
+    (out / "_errors.json").unlink(missing_ok=True)  # drop any stale error report
     tasks = find_sources(root, kinds)
     task_args = [(kind, str(path), str(out), str(root)) for kind, path in tasks]
     if jobs == 1:

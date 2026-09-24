@@ -10,10 +10,17 @@ import json
 import struct
 from pathlib import Path
 
+from PIL import Image
+
 from digart.cli import main
 from tests.fixtures import make_fixtures as fx
 
 PAL = bytes((i * 5) & 0xFF for i in range(768))
+
+
+def chunk(tag: bytes, payload: bytes) -> bytes:
+    """Header-inclusive LA1 chunk: tag + u32BE size (8 + payload), no padding."""
+    return tag + struct.pack(">I", 8 + len(payload)) + payload
 
 
 def codec1_payload() -> bytes:
@@ -26,6 +33,44 @@ def codec1_payload() -> bytes:
 def empty_la1() -> bytes:
     """A valid LECF/LOFF container with zero rooms: no bitmaps, no errors."""
     return b"LECF" + struct.pack(">I", 17) + b"LOFF" + struct.pack(">I", 8) + b"\x00"
+
+
+def obim_bomp_la1() -> bytes:
+    """One room with a single 2x2 OBIM BOMP object sprite (index 0 transparent).
+
+    The sprite's pixels are ``[0, 5, 6, 0]``; ``_decode_bomp`` reports
+    ``transparent0=False`` but OBIM sprites must still be emitted with index 0
+    alpha 0.
+    """
+    w = h = 2
+    row0 = struct.pack("<H", 3) + bytes([2, 0, 5])   # literal run -> [0, 5]
+    row1 = struct.pack("<H", 3) + bytes([2, 6, 0])   # literal run -> [6, 0]
+    bomp = chunk(b"BOMP", bytes(2) + struct.pack("<HH", w, h) + bytes(4) + row0 + row1)
+    imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, w, h))
+    obim = chunk(b"OBIM", imhd + chunk(b"IM01", bomp))
+    rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, h, 0))
+    wrap = chunk(b"WRAP", chunk(b"OFFS", struct.pack("<I", 12)) + chunk(b"APAL", PAL))
+    room = chunk(b"ROOM", rmhd + chunk(b"PALS", wrap) + obim)
+    loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
+    return chunk(b"LECF", loff + chunk(b"LFLF", room))
+
+
+def akos_cdat_la1() -> bytes:
+    """One room with a single 2x2 AKOS codec-5 (CDAT/BOMP) cel.
+
+    The cel's pixels are ``[255, 7, 9, 255]``; its transparent index is 255, so
+    it must be emitted RGBA with index 255 normalized to alpha 0.
+    """
+    row0 = struct.pack("<H", 3) + bytes([2, 255, 7])   # literal run -> [255, 7]
+    row1 = struct.pack("<H", 3) + bytes([2, 9, 255])   # literal run -> [9, 255]
+    akcd = chunk(b"AKCD", row0 + row1)
+    akhd = chunk(b"AKHD", struct.pack("<HHHHHH", 1, 0, 1, 1, 5, 0))
+    akpl = chunk(b"AKPL", bytes(16))
+    akci = chunk(b"AKCI", struct.pack("<HH", 2, 2))
+    akof = chunk(b"AKOF", struct.pack("<I", 0) + struct.pack("<H", 0))
+    akos = chunk(b"AKOS", akhd + akpl + akci + akcd + akof)
+    loff = chunk(b"LOFF", bytes([1, 1]) + struct.pack("<I", 30))
+    return chunk(b"LECF", loff + chunk(b"LFLF", chunk(b"ROOM", b"") + akos))
 
 
 def make_app(tmp_path: Path, san: bytes, nut: bytes, la1: bytes) -> Path:
@@ -139,3 +184,54 @@ def test_extract_is_deterministic(tmp_path):
     assert da["counts"] == db["counts"]
     assert da["game_root"] == db["game_root"]
     assert (a / "san/SQ1/00000.png").read_bytes() == (b / "san/SQ1/00000.png").read_bytes()
+
+
+def test_obim_bomp_sprite_is_rgba_with_alpha(tmp_path):
+    app = make_app(tmp_path, san=b"", nut=b"", la1=obim_bomp_la1())
+    out = tmp_path / "out"
+    assert main(["extract", "--game", str(app), "--out", str(out),
+                 "--only", "la1", "--jobs", "1"]) == 0
+
+    doc = read_manifest(out)
+    assert [a["id"] for a in doc["assets"]] == ["la1:obj063_01"]
+    asset = doc["assets"][0]
+    assert asset["has_alpha"] is True
+
+    im = Image.open(out / asset["path"])
+    assert im.mode == "RGBA"
+    assert im.size == (2, 2)
+    assert im.getpixel((0, 0))[3] == 0        # index 0 -> transparent
+    assert im.getpixel((1, 1))[3] == 0
+    assert im.getpixel((1, 0))[3] == 255      # non-transparent pixels keep alpha
+    assert im.getpixel((1, 0))[:3] == tuple(PAL[5 * 3:5 * 3 + 3])
+    assert im.getpixel((0, 1))[:3] == tuple(PAL[6 * 3:6 * 3 + 3])
+
+
+def test_akos_cdat_cel_255_is_rgba_with_alpha(tmp_path):
+    app = make_app(tmp_path, san=b"", nut=b"", la1=akos_cdat_la1())
+    out = tmp_path / "out"
+    assert main(["extract", "--game", str(app), "--out", str(out),
+                 "--only", "akos", "--jobs", "1"]) == 0
+
+    doc = read_manifest(out)
+    assert [a["id"] for a in doc["assets"]] == ["akos:costume001_000"]
+    asset = doc["assets"][0]
+    assert asset["has_alpha"] is True
+
+    im = Image.open(out / asset["path"])
+    assert im.mode == "RGBA"
+    assert im.size == (2, 2)
+    assert im.getpixel((0, 0))[3] == 0        # index 255 -> normalized alpha 0
+    assert im.getpixel((1, 1))[3] == 0
+    assert im.getpixel((1, 0))[3] == 255
+    assert im.getpixel((0, 1))[3] == 255
+
+
+def test_stale_errors_file_is_removed_on_clean_run(tmp_path):
+    app = default_app(tmp_path)
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "_errors.json").write_text('{"count": 1, "errors": []}')
+
+    assert main(["extract", "--game", str(app), "--out", str(out), "--jobs", "1"]) == 0
+    assert not (out / "_errors.json").exists()
