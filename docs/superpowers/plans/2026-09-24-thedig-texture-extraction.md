@@ -17,7 +17,7 @@
 - The game bundle (`~/Documents/The Dig®.app`) is opened **read-only, always**; nothing is ever written under it.
 - Screen model for The Dig SANs: 320×200 (`FRAME_W = 320`, `FRAME_H = 200`). Palettes are 768-byte 8-bit RGB, used verbatim (no 6-bit scaling).
 - SAN frames are opaque RGB: every `FRME`'s `FOBJ` is codec 37 (`SMUSH_CODEC_DELTA_BLOCKS`), a stateful delta-block decoder that writes a full 320×200 frame into the back buffer; NUT/LA1 glyph/costume bitmaps map index 0 to alpha 0 in the PNG writer.
-- Output must be deterministic: no timestamps in PNGs or manifest; entries in sorted source-file order with zero-padded frame indices.
+- Output must be deterministic: PNGs carry no timestamps; the manifest's `extracted_at` is an explicit caller input (determinism means identical inputs → identical bytes), not a writer-injected timestamp; entries in sorted source-file order with zero-padded frame indices.
 - `make check` (unit tests only, game-marked tests deselected) must be green at every commit; `make verify` additionally runs the 55-file oracle differential.
 - Commit per task with conventional messages (`feat:`/`test:`/`chore:`).
 
@@ -752,13 +752,13 @@ Rules (transcribe `NutRenderer::loadFont` + `codec1`/`codec21` from the vendored
 
 **Verified reality (controller-verified on the real `DIG.LA1`, 88,673,344 bytes) — the plan's earlier LA1 model was wrong; this task documents the true structure:**
 
-- **LA1 chunk sizes include the 8-byte header**: `next = chunk_start + size + (size & 1)`. Verified: `LOFF` size 564 → next at `8+564=572` (`LFLF`); `LFLF` size 181142 → next at `181714`; `RMHD` size 18 → next at `606` (`CYCL`). This is the opposite of SAN (payload-only).
-- `LECF` → `LOFF` + `LFLF` blocks. `LOFF` payload = a `u16LE` header value (367 — **not** the entry count) + entries of `u32LE offset + u8 kind`, stride 5. **110 entries**, kinds `2..111` sequential, each offset landing on a `ROOM` tag that is the payload of an `LFLF` at `offset-8`.
-- `ROOM` children (correct stride): `RMHD`(110), `CYCL`, `TRNS`, `PALS`, `RMIM`(110), `OBIM`(841), `OBCD`(239), `EXCD`, `NCD`, `XCD`, `ENCD`, `LSC`/`LSCR`/`NLSC`/`SCR`. `RMHD` payload (LE u16) = `(730, 0, 320, 200, 1)` → room 320×200.
+- **LA1 chunk sizes include the 8-byte header with no odd padding**: `next = chunk_start + size`. Verified: `LOFF` size 564 → next at `8+564=572` (`LFLF`); `LFLF` size 181142 → next at `181714`; `RMHD` size 18 → next at `606` (`CYCL`). This is the opposite of SAN (payload-only).
+- `LECF` → `LOFF` + `LFLF` blocks. `LOFF` payload = a `u8` count byte = 111 followed by **111 records** of `u8 room` + `u32LE offset`, stride 5 (occupied bytes `1 + 111*5 = 556`, no trailing bytes). Rooms `1..111` sequential, every offset landing on a `LFLF`/`ROOM`.
+- `ROOM` children (correct stride): 111 rooms and `LFLF`/`RMHD`/`RMIM`/`PALS` each, `OBIM`/`OBCD` **842** each, plus `CYCL`, `TRNS`, `EXCD`, `NCD`, `XCD`, `ENCD`, `LSC`/`LSCR`/`NLSC`/`SCR`. `RMHD` payload (LE u16) = `(730, 0, 320, 200, 1)` → room 320×200.
 - Room/object images are **SMAP**, not BOMP: `RMIM` → `RMIH` + `IM00`; `IM00` payload = `'SMAP' + u32BE size` + a `u32LE` row-offset table starting at `payload+8`; the codec byte is at `payload[row_offset[0]]`. The v7 `drawStrip` branch (`gfx.cpp:2462-2465`) reads `smapLen = READ_BE_UINT32(smap_ptr+4)` and `offset = READ_LE_UINT32(smap_ptr + stripnr*4 + 8)`.
-- RMIM codec histogram (controller scan): `108,106,107,104,105,127` (RMAJMIN/HT variants), `16,17,18,26,27,28` (ZIGZAG V/H), `37` (ZIGZAG_VT7), `1` (RAW256). `OBIM` images need the same scan (their `IM00` may be nested differently).
-- Palettes: `PALS` (110, ~804 bytes: multiple tables) and `APAL`.
-- The naive child walk still desyncs in a few rooms; the census must report every desync with its offset.
+- RMIM codec histogram (controller scan): `108,106,107,104,105,127` (RMAJMIN/HT variants), `16,17,18,26,27,28` (ZIGZAG V/H), `37` (ZIGZAG_VT7), `1` (RAW256). `OBIM` images need the same scan (their `IMxx` may be nested differently).
+- Palettes: `PALS` (111, ~804 bytes: multiple tables) and `APAL`.
+- The walk has **0 desyncs** with the correct header-inclusive stride; the padded stride (`next = start + size + (size & 1)`) desyncs in all 111 rooms (one per room). The census reports every desync with its offset.
 
 - [ ] **Step 1: Write `tools/la1_census.py`** using the header-inclusive stride above. It must emit, deterministically:
   1. The `LECF`/`LOFF`/`LFLF`/`ROOM` layout, the LOFF entry count, and the `LFLF` count.

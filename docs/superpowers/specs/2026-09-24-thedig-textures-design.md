@@ -99,13 +99,15 @@ the emitted RGBA PNG and every other index is opaque.
 `LA0` (16 KB) is the v7 index (`RNAM`, `MAXS`, `DROO`, `DSCR`, `DSOU`, `DCOS`, `DCHR`,
 `DOBJ`, `AARY`, `ANAM`) per `engines/scumm/resource.cpp` (v7 data is unencrypted). `LA1`
 (88.6 MB) is a `LECF` container holding a `LOFF` offset directory followed by `LFLF`
-blocks. LA1 chunk sizes **include the 8-byte header** (`next = chunk_start + size +
-(size & 1)`) — the opposite of SAN. `LOFF` payload is a `u16LE` header value followed by
-entries of `u32LE offset + u8 kind`, stride 5; there are 110 entries (kinds 2..111) whose
-offsets point at `LFLF` payloads, i.e. the `ROOM` chunk.
+blocks. LA1 chunk sizes **include the 8-byte header with no odd padding**
+(`next = chunk_start + size`) — the opposite of SAN. `LOFF` payload is a `u8` count byte
+= 111 followed by 111 records of `u8 room` + `u32LE offset`, stride 5 (occupied bytes
+`1 + 111*5 = 556`, no trailing bytes); each offset points at a `LFLF` whose payload is the
+`ROOM` chunk (rooms 1..111 sequential, every offset landing on `LFLF`/`ROOM`).
 
 Room children (`RMHD`, `CYCL`, `TRNS`, `PALS`, `RMIM`, `OBIM`, `OBCD`, …) are walked with
-the header-inclusive stride. Room and object images are **SMAP** bitmaps, not BOMP rows:
+the header-inclusive stride: 111 rooms and `LFLF`/`RMHD`/`RMIM`/`PALS` each, `OBIM`/`OBCD`
+842 each, and **0 desyncs**. Room and object images are **SMAP** bitmaps, not BOMP rows:
 `RMIM`/`OBIM` → `IM00` → `'SMAP' + u32BE size` + a `u32LE` row-offset table; the codec
 byte is at `payload[row_offset[0]]`, decoded by `Gdi::decompressBitmap` plus the matching
 `drawStrip*` routine (`engines/scumm/gfx.cpp`). The codec set is dominated by
@@ -166,17 +168,21 @@ PNG writing strips timestamps so output is reproducible run-to-run.
 }
 ```
 
-Rules: `id` = `"<kind-prefix>:<source-stem-lower>:<zero-padded index>"`; `frame`/`name`
-set per kind; `palette` is the hex sha256 of the 8-bit color table; entries are emitted
-in deterministic source-file/frame order. `has_alpha` is `false` for `san_frame` (opaque
-back-buffer) and for opaque room-background bitmaps (`RMIM` decoded with a
-non-transparent strip codec); it is `true` for `nut_image`, for `OBIM` object images, and
+Rules: for `san_frame`/`nut_image` the `id` is
+`"<kind-prefix>:<source-stem-lower>:<zero-padded index>"` (e.g. `san:sq1:00000`,
+`nut:font0:000`); for the named room/object/costume bitmaps it is `"<kind-prefix>:<name>"`
+(e.g. `la1:room001`, `la1:obj063_01`, `akos:costume001_000`). `frame`/`name` are set per
+kind; `palette` is the hex sha256 of the 8-bit color table; entries are emitted in
+deterministic source-file/frame order. `counts.la1_bitmaps` counts every `la1_bitmap`
+record, including the `akos:`-prefixed costume cels — there is no separate `akos` count.
+`has_alpha` is `false` for `san_frame` (opaque back-buffer), for opaque room-background
+bitmaps (`RMIM` decoded with a non-transparent strip codec), and for non-transparent SMAP
+`OBIM`; it is `true` for `nut_image`, for transparent-strip `OBIM`, for BOMP `OBIM`, and
 for `AKOS` costume cels. When `has_alpha` is `true` the decoder's transparent index is
 normalized to palette index 0 with alpha 0 before writing, leaving every non-transparent
-pixel's RGB unchanged — the index is `0` for Byle cels and transparent SMAP `OBIM`, `2`
-for NUT codec 44, and `255` for BOMP `OBIM` and CDAT/MajMin cels; non-transparent SMAP
-`OBIM` and `RMIM` stay opaque. A regeneration pipeline can group, condition, and trace
-every PNG from this file alone.
+pixel's RGB unchanged — the index is `0` for Byle cels, transparent SMAP `OBIM`, and NUT
+codec 1; `2` for NUT codec 44; and `255` for BOMP `OBIM` and CDAT/MajMin cels. A
+regeneration pipeline can group, condition, and trace every PNG from this file alone.
 
 ## 6. CLI
 
