@@ -250,7 +250,7 @@ def test_dst_offset_respected():
 
 def test_mixed_opcodes_sequence():
     dst = bytearray(6)
-    src = bytes([0b0000_0011, 0xAA, 0xBB]) + bytes([0b0000_0111, 0x42])  # lit2, RLE4
+    src = bytes([0b0000_0010, 0xAA, 0xBB]) + bytes([0b0000_0111, 0x42])  # lit2, RLE4
     bomp_decode_line(dst, 0, src, 0, 6)
     assert dst == bytearray(b"\xAA\xBB" + b"\x42" * 4)
 ```
