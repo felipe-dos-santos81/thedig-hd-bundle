@@ -41,7 +41,8 @@ check: install ## Run the unit test suite (game-marked tests deselected)
 oracle: ## Build the vendored C++ codec-37 reference oracle
 	bash vendor/san-oracle/build.sh
 
-verify: check oracle ## check + oracle + byte-exact SAN + NUT + LA1 differentials
+verify: check oracle ## check + oracle + byte-exact SAN + NUT + LA1 + AKOS differentials
 	$(PYTHON) tools/diff_oracle.py
 	$(PYTHON) tools/diff_nut.py
 	$(PYTHON) tools/diff_la1.py
+	$(PYTHON) tools/diff_akos.py
