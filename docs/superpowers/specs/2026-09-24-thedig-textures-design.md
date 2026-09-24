@@ -102,16 +102,18 @@ the emitted RGBA PNG and every other index is opaque.
 blocks. LA1 chunk sizes **include the 8-byte header with no odd padding**
 (`next = chunk_start + size`) — the opposite of SAN. `LOFF` payload is a `u8` count byte
 = 111 followed by 111 records of `u8 room` + `u32LE offset`, stride 5 (occupied bytes
-`1 + 111*5 = 556`, no trailing bytes); each offset points at a `LFLF` whose payload is the
-`ROOM` chunk (rooms 1..111 sequential, every offset landing on `LFLF`/`ROOM`).
+`1 + 111*5 = 556`, no trailing bytes); each offset is the absolute file offset of a
+`ROOM` tag, with its `LFLF` header at `offset - 8` (rooms 1..111 sequential, every offset
+landing on `LFLF`/`ROOM`).
 
 Room children (`RMHD`, `CYCL`, `TRNS`, `PALS`, `RMIM`, `OBIM`, `OBCD`, …) are walked with
 the header-inclusive stride: 111 rooms and `LFLF`/`RMHD`/`RMIM`/`PALS` each, `OBIM`/`OBCD`
 842 each, and **0 desyncs**. Room and object images are **SMAP** bitmaps, not BOMP rows:
-`RMIM`/`OBIM` → `IM00` → `'SMAP' + u32BE size` + a `u32LE` row-offset table; the codec
-byte is at `payload[row_offset[0]]`, decoded by `Gdi::decompressBitmap` plus the matching
-`drawStrip*` routine (`engines/scumm/gfx.cpp`). The codec set is dominated by
-`RMAJMIN`/`ZIGZAG` variants plus `RAW256`. The room palette comes from `PALS`/`APAL`.
+`RMIM` → `RMIH` + `IM00` → `'SMAP' + u32BE size` + a `u32LE` row-offset table; `OBIM` →
+`IMHD` + `IM01..IM0E`, each an SMAP **or** BOMP payload. The codec byte is at
+`payload[row_offset[0]]`, decoded by `Gdi::decompressBitmap` plus the matching `drawStrip*`
+routine (`engines/scumm/gfx.cpp`). The codec set is dominated by `RMAJMIN`/`ZIGZAG`
+variants plus `RAW256`. The room palette comes from `PALS`/`APAL`.
 Scripts, sounds, charsets and arrays are recognized and skipped. The exact tag inventory
 and codec set are captured by the §8 census probe (`docs/la1-census.txt`) before the
 decoder ships; every decodable bitmap is extracted, every other chunk logged.
@@ -170,7 +172,7 @@ PNG writing strips timestamps so output is reproducible run-to-run.
 
 Rules: for `san_frame`/`nut_image` the `id` is
 `"<kind-prefix>:<source-stem-lower>:<zero-padded index>"` (e.g. `san:sq1:00000`,
-`nut:font0:000`); for the named room/object/costume bitmaps it is `"<kind-prefix>:<name>"`
+`nut:font0:00000`); for the named room/object/costume bitmaps it is `"<kind-prefix>:<name>"`
 (e.g. `la1:room001`, `la1:obj063_01`, `akos:costume001_000`). `frame`/`name` are set per
 kind; `palette` is the hex sha256 of the 8-bit color table; entries are emitted in
 deterministic source-file/frame order. `counts.la1_bitmaps` counts every `la1_bitmap`
