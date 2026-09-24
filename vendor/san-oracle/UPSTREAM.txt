@@ -1,0 +1,9 @@
+scummvm commit: ac3ab2250a4d8d82fe22c1d784a3d9c490342293
+verbatim upstream, GPL-3.0-or-later:
+639e5a04587a45bde127a528bc50f416f14149a9c9df438aeba6c43663d018b1  ./engines/scumm/smush/codec37.cpp
+06c5ec4a84bde3b549ed79dd34967b828faca4dbd43568b8987bf5fcc675a982  ./engines/scumm/smush/smush_player.cpp
+e01654426a8f8bb1447fb5228673c25388901436c1939f2975c754d6f3528e16  ./engines/scumm/smush/codec37.h
+186b9aec622a63a0ed209b8a20a36833a135f1941d43a91366dccd18537a6dab  ./engines/scumm/smush/codec1.cpp
+579e894a6bdfa2bf07c624e8731f071ec9db0c8516ead797674a495d01f9ef9d  ./engines/scumm/bomp.h
+272f2e547f37d6c1316d28ba0fc3a8259ca51c07297871e95ccc7f8ab91c8b08  ./engines/scumm/nut_renderer.cpp
+b69c89ade8c95635b7ed6bd455000070756e2a52bda89c05c40ab84ccbca8a71  ./engines/scumm/bomp.cpp
