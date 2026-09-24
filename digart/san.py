@@ -2,6 +2,7 @@ import struct
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 
+from .codec37 import DeltaBlocksDecoder
 from .errors import DecodeError
 
 FRAME_W, FRAME_H = 320, 200
@@ -23,7 +24,7 @@ class SanReader:
     buf: bytearray = field(default_factory=lambda: bytearray(FRAME_W * FRAME_H))
     skipped: dict = field(default_factory=dict)
     num_frames_announced: int = 0
-    _pending: int = 0
+    _decoder: DeltaBlocksDecoder | None = None
 
     def frames(self) -> Iterator[SanFrame]:
         d, n = self.data, len(self.data)
@@ -44,7 +45,7 @@ class SanReader:
                 assert ver == 2
                 self.pal = bytearray(p[6:774])
             elif tag == b"FRME":
-                self._feed(d[body:body + size])
+                self._feed(d[body:body + size], body)
                 emitted += 1
                 yield SanFrame(bytes(self.buf), bytes(self.pal))
             else:
@@ -53,7 +54,7 @@ class SanReader:
         if self.num_frames_announced != emitted:
             self.skipped["FRAME_COUNT_MISMATCH"] = self.num_frames_announced - emitted
 
-    def _feed(self, f: bytes) -> None:
+    def _feed(self, f: bytes, base: int = 0) -> None:
         p = 0
         while p + 8 <= len(f):
             tag = f[p:p + 4]
@@ -65,11 +66,10 @@ class SanReader:
             elif tag == b"XPAL":
                 self._xpal(payload)
             elif tag == b"FOBJ":
-                self._fobj(payload)
-            elif tag == b"ZFOB":
-                self._zfb(payload)
+                self._fobj(payload, base + p)
             else:
-                self.skipped[tag.decode("latin1")] = self.skipped.get(tag.decode("latin1"), 0) + 1
+                key = tag.decode("latin1")
+                self.skipped[key] = self.skipped.get(key, 0) + 1
             p += 8 + size + (size & 1)
 
     def _xpal(self, payload: bytes) -> None:
@@ -86,11 +86,21 @@ class SanReader:
             if cmd == 512:
                 self.pal = bytearray(payload[4 + 1536:4 + 1536 + 768])
 
-    def _fobj(self, payload: bytes) -> None:      # implemented in Task 4
-        self._pending += 1
-
-    def _zfb(self, payload: bytes) -> None:       # implemented in Task 4
-        self._pending += 1
+    def _fobj(self, payload: bytes, offset: int = 0) -> None:
+        if len(payload) < 14:
+            raise DecodeError(self.source, offset, f"FOBJ payload too small {len(payload)}")
+        codec, _left, _top, w, h, _objid, _parm2 = struct.unpack_from("<HhhHHHH", payload, 0)
+        if h > FRAME_H or w > FRAME_W:
+            self.skipped["skip_big"] = self.skipped.get("skip_big", 0) + 1
+            return
+        if (h, w) != (FRAME_H, FRAME_W):
+            self.skipped["skip_small"] = self.skipped.get("skip_small", 0) + 1
+            return
+        if codec != 37:
+            raise DecodeError(self.source, offset, f"unsupported codec {codec}")
+        if self._decoder is None:
+            self._decoder = DeltaBlocksDecoder(FRAME_W, FRAME_H)
+        self._decoder.decode(self.buf, payload[14:])
 
 
 def iter_frames(data: bytes, source: str = "?") -> Iterator[SanFrame]:
