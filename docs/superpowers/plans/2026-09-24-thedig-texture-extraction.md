@@ -4,7 +4,7 @@
 
 **Goal:** Build `thedig-textures`, a Python CLI that extracts every SAN frame, NUT glyph/icon, and SCUMM v7 LA1 bitmap from the GOG *The Dig* `.app` into PNGs + a manifest, pixel-identical to what ScummVM's shipped SmushPlayer renders.
 
-**Architecture:** Pure-Python ports of the upstream ScummVM decode paths (BOMP row RLE, SMUSH `ANIM/AHDR/FRME/NPAL/XPAL/FOBJ/ZFOB`, NUT font walker, LECF/ROOM index), plus a small vendored C++ oracle harness built from the *actual* upstream `bomp.cpp`/`codec1.cpp`, used for byte-exact differential verification on all 55 `.SAN` files.
+**Architecture:** Pure-Python ports of the upstream ScummVM decode paths (BOMP row RLE, SMUSH `ANIM/AHDR/FRME/NPAL/XPAL/FOBJ` including the stateful codec-37 delta-block decoder, NUT font walker, LECF/ROOM index), plus a small vendored C++ oracle harness built from the *actual* upstream `bomp.cpp`/`codec37.cpp`, used for byte-exact differential verification on all 55 `.SAN` files.
 
 **Tech Stack:** Python 3.12, Pillow (only runtime dep), pytest (dev), stdlib `zlib`, clang++ (oracle build only).
 
@@ -16,7 +16,7 @@
 - License: GPL-3.0-or-later. Vendored upstream files keep their original headers; the sed-extracted regions in the oracle are verbatim (no re-typing).
 - The game bundle (`~/Documents/The Dig®.app`) is opened **read-only, always**; nothing is ever written under it.
 - Screen model for The Dig SANs: 320×200 (`FRAME_W = 320`, `FRAME_H = 200`). Palettes are 768-byte 8-bit RGB, used verbatim (no 6-bit scaling).
-- SAN frames are opaque (index 0 = "keep previous pixel"); NUT/LA1 glyph/costume bitmaps map index 0 to alpha 0 in the PNG writer.
+- SAN frames are opaque RGB: every `FRME`'s `FOBJ` is codec 37 (`SMUSH_CODEC_DELTA_BLOCKS`), a stateful delta-block decoder that writes a full 320×200 frame into the back buffer; NUT/LA1 glyph/costume bitmaps map index 0 to alpha 0 in the PNG writer.
 - Output must be deterministic: no timestamps in PNGs or manifest; entries in sorted source-file order with zero-padded frame indices.
 - `make check` (unit tests only, game-marked tests deselected) must be green at every commit; `make verify` additionally runs the 55-file oracle differential.
 - Commit per task with conventional messages (`feat:`/`test:`/`chore:`).
@@ -31,6 +31,7 @@ README.md                          usage (final in Task 9)
 digart/__init__.py                 __version__
 digart/errors.py                   DecodeError(source, offset, reason)
 digart/bomp.py                     bomp_decode_line — port of engines/scumm/bomp.cpp
+digart/codec37.py                  DeltaBlocksDecoder — port of smush/codec37.cpp (SAN FOBJ codec 37)
 digart/san.py                      SanFrame, iter_frames — SmushPlayer frame state machine
 digart/nut.py                      NutImage, iter_images — port of NutRenderer::loadFont
 digart/la1.py                      La1Bitmap, iter_bitmaps — LECF/LOFF/ROOM walker
@@ -40,14 +41,16 @@ digart/cli.py                      extract/verify, preflight, --jobs orchestrati
 tools/diff_oracle.py               python-vs-C++ differential over all .san files
 tools/la1_census.py                DIG.LA1 chunk-tag census (Task 8 Step 1)
 vendor/san-oracle/UPSTREAM.txt     pinned scummvm commit SHA + file hashes
-vendor/san-oracle/bomp.h bomp.cpp codec1.cpp nut_renderer.cpp   verbatim upstream
+vendor/san-oracle/upstream/engines/scumm/{bomp.h,bomp.cpp,nut_renderer.cpp}   verbatim upstream
+vendor/san-oracle/upstream/engines/scumm/smush/{codec1.cpp,codec37.cpp,codec37.h,smush_player.cpp}
+vendor/san-oracle/inc/common/*.h   stub headers pulling in shim.h
 vendor/san-oracle/shim.h           minimal byte/READ_* typedefs
-vendor/san-oracle/bomp_core.cpp codec1_core.cpp     sed-extracted upstream regions
+vendor/san-oracle/bomp_core.cpp    sed-extracted upstream bompDecodeLine overloads
 vendor/san-oracle/oracle_main.cpp  transcribed Dig-path SMUSH walk + FRMK emitter
 vendor/san-oracle/build.sh
 tests/conftest.py                  bundle fixture + game skip
 tests/fixtures/make_fixtures.py    synthetic SAN/NUT/ROOM builders
-tests/test_bomp.py test_san.py test_san_draw.py test_nut.py test_la1.py
+tests/test_bomp.py test_san.py test_codec37.py test_nut.py test_la1.py
 tests/test_manifest.py test_cli.py test_oracle_fixture.py
 docs/la1-census.txt                produced by Task 8 (committed real-file census)
 docs/proofs/                       first-frame PNGs + proof README (Task 9)
@@ -310,7 +313,7 @@ Behavior (spec §4.1; upstream `smush_player.cpp` — follow exactly):
 - `XPAL`: u16LE@0 (ignored), u16LE cmd@2.
   - cmd==256: skip u16LE@4; for i<768: `shifted[i] += delta[i]; pal[i] = clip(shifted[i] >> 7, 0, 255)`.
   - else: for j<768: `shifted[j] = pal[j] << 7; delta[j] = i16(u16LE@4+2j)`; if cmd==512 also `pal = payload[4+1536 : 4+1536+768]`.
-- After processing every sub-chunk of a `FRME`, yield `SanFrame(bytes(buf), bytes(pal))` — always, even if nothing was drawn (matches the engine displaying the unchanged back buffer). `FOBJ`/`ZFOB` hooks: `self._fobj(payload)` exists from Task 4; until then they call `self._pending_fobj += 1` (fixture tests emit none).
+- After processing every sub-chunk of a `FRME`, yield `SanFrame(bytes(buf), bytes(pal))` — always, even if nothing was drawn (matches the engine displaying the unchanged back buffer). `FOBJ` hook: `self._fobj(payload)` exists from Task 5; until then it calls `self._pending += 1` (fixture tests emit none). `ZFOB` is recognized-and-ignored (never occurs in the bundle).
 - `buf = bytearray(64000)` zero-filled.
 
 - [ ] **Step 1: Write fixtures** `tests/fixtures/make_fixtures.py`:
@@ -528,205 +531,139 @@ def iter_frames(data: bytes, source: str = "?") -> Iterator[SanFrame]:
 
 ---
 
-### Task 4: FOBJ/ZFOB back-buffer drawing
+### Task 4: Vendored upstream sources + C++ oracle + differential harness
 
 **Files:**
-- Modify: `digart/san.py` (replace `_fobj`/`_zfb` stubs; add imports `zlib`, `bomp_decode_line`, `struct`)
-- Create: `tests/test_san_draw.py`
+- Create: `vendor/san-oracle/{UPSTREAM.txt, shim.h, build.sh, oracle_main.cpp}`, vendored `vendor/san-oracle/upstream/engines/scumm/{bomp.h, bomp.cpp, nut_renderer.cpp, smush/codec1.cpp, smush/codec37.cpp, smush/codec37.h, smush/smush_player.cpp}`, stub headers `vendor/san-oracle/inc/common/{scummsys.h, endian.h, textconsole.h, util.h}`, `tools/diff_oracle.py`
 
 **Interfaces:**
-- Consumes: `bomp_decode_line`, `DecodeError`.
-- Produces: unchanged public API; real FOBJ drawing.
+- Produces: `vendor/san-oracle/san-oracle dump FILE` → stdout stream of records `b"FRMK" + "<HH"(w,h) + pal[768] + index[w*h]`, one per `FRME`, in file order. Exit 2 + stderr message on malformed stream.
+- The oracle compiles the vendored upstream `codec37.cpp` **verbatim**; it must not re-implement the decoder.
 
-Rules (port of `handleFrameObject` + `decodeFrameObject` + `smushDecodeRLE`, Dig path `_insanity=False`):
-- Header (LE, 14 B): u16 codec, i16 left, i16 top, u16 w, u16 h, u16 objId, u16 parm2.
-- Guard order, each returns silently (counts in `skipped`): `h > FRAME_H or w > FRAME_W` → `skip_big`; `(h, w) != (200, 320)` → `skip_small` (non-insane overlay objects are never displayed; objId `242x384` special-case likewise lands in `skip_small` — document with a comment that the engine routes it to a hidden buffer we deliberately do not expose).
-- codec 1/3 (RLE): row cursor `p = top * FRAME_W + left` for row 0; per row `row_len = u16LE(payload[k])`; `bomp_decode_line(self.buf, p, payload, k + 2, w, set_zero=False)`; `k += row_len + 2`; `p += FRAME_W`. (C caller advances by `left` then `pitch-left` = `pitch`; the line decoder's own advance is lost — replicate exactly.)
-- codec 20 (uncompressed): faithful port of the upstream transposed-cursor quirk: row 0 base = `left * FRAME_W + top` (yes, `pitch*left + top`), then `+FRAME_W` per row, memcpy `w` bytes.
-- any other codec value → `DecodeError(self.source, offset, f"unsupported codec {codec}")` (must never fire on The Dig; `make verify` proves it).
-- `ZFOB` payload: u32BE inflated size@0, then a zlib stream; `data = zlib.decompress(payload[4:])` (fall back to `zlib.decompressobj(-15)` raw if a file turns out raw — log which on first hit); header + draw identical to FOBJ from the inflated bytes.
+**Verified facts that fix this task's shape** (see spec §4.1; controller-verified against all 55 files):
+- Every `FOBJ` is codec 37; there are no codec 1/3/20 `FOBJ` and no `ZFOB` in the bundle.
+- The decoder is `SmushDeltaBlocksDecoder` (`smush/codec37.cpp`), constructed once per stream with `(320, 200)` and **stateful across frames**.
+- All Dig game hooks are base-class no-ops (`smush_player.h:318-333`); `_insanity` is false; every `IACT` is audio-only `(code=8, flags=46)` and has no back-buffer effect.
+- The `(height==242 && width==384)` special-buffer path (`smush_player.cpp:866`) never occurs (all FOBJ are 320×200).
 
-- [ ] **Step 1: Write failing tests** `tests/test_san_draw.py`:
-
-```python
-import struct, zlib
-from digart import san as S
-from tests.fixtures import make_fixtures as fx
-
-def runs(color: int, num: int) -> bytes:           # RLE opcodes covering num pixels (BOMP max run = 128)
-    out = bytearray()
-    while num:
-        n = min(num, 128)
-        out += bytes([((n - 1) << 1) | 1, color])
-        num -= n
-    return bytes(out)
-
-def lit_zeros(n: int) -> bytes:                    # literal run of n zero bytes (BOMP max run = 128)
-    return bytes([((n - 1) << 1)]) + bytes(n)
-
-def fobj_payload(codec: int, left: int, top: int, w: int, h: int, rows: bytes) -> bytes:
-    return struct.pack("<HhhHHHH", codec, left, top, w, h, 0, 0) + rows
-
-def full_rows(color: int) -> bytes:
-    enc = runs(color, 320)
-    return b"".join(struct.pack("<H", len(enc)) + enc for _ in range(200))
-
-def fullscreen(codec: int = 1, color: int = 0x42) -> bytes:
-    if codec == 1:
-        return fx.fsub(b"FOBJ", fobj_payload(1, 0, 0, 320, 200, full_rows(color)))
-    raw = struct.pack("<HhhHHHH", 20, 0, 0, 320, 200, 0, 0) + bytes(color) * 64000
-    return fx.fsub(b"FOBJ", raw)
-
-def test_rle_fill_then_snapshot():
-    fs = list(S.iter_frames(fx.san([fx.frame(fx.npal(bytes(768))), fx.frame(fullscreen(1, 0x42))])))
-    assert fs[1].index[0] == 0x42 and fs[1].index[-1] == 0x42
-
-def test_index_zero_rows_keep_previous():
-    # frame1: full 0x11; frame2: rows 0-1 = 0x22, row2 = literal zeros (keep), rows 3-199 = RLE 0x00 (keep)
-    enc22, enc00 = runs(0x22, 320), runs(0x00, 320)
-    zero_lit = lit_zeros(128) + lit_zeros(128) + lit_zeros(64)
-    rows = (struct.pack("<H", len(enc22)) + enc22) * 2 + \
-           struct.pack("<H", len(zero_lit)) + zero_lit + \
-           b"".join(struct.pack("<H", len(enc00)) + enc00 for _ in range(197))
-    f2 = fx.fsub(b"FOBJ", fobj_payload(1, 0, 0, 320, 200, rows))
-    data = fx.san([fx.frame(fx.npal(bytes(768))),
-                   fx.frame(fx.fsub(b"FOBJ", fobj_payload(1, 0, 0, 320, 200, full_rows(0x11)))),
-                   fx.frame(f2)])
-    fs = list(S.iter_frames(data))
-    assert fs[1].index[:320] == bytes([0x11]) * 320
-    assert fs[2].index[:320] == bytes([0x22]) * 320          # explicit rows
-    assert fs[2].index[640:960] == bytes([0x11]) * 320       # literal-zero row keeps 0x11
-    assert fs[2].index[960:] == bytes([0x11]) * (64000 - 960) # RLE color-0 rows keep 0x11
-
-def test_small_obj_skipped():
-    small = fx.fsub(b"FOBJ", fobj_payload(1, 0, 0, 300, 200, b""))
-    r = S.SanReader(fx.san([fx.frame(small)]))
-    fs = list(r.frames())
-    assert fs[0].index == bytes(64000) and r.skipped["skip_small"] == 1
-
-def test_codec20_uncompressed():
-    fs = list(S.iter_frames(fx.san([fx.frame(fx.npal(bytes(768))), fx.frame(fullscreen(20, 0x33))])))
-    assert fs[1].index[0] == 0x33 and fs[1].index[-1] == 0x33
-
-def test_zfb_roundtrip():
-    inner = fobj_payload(1, 0, 0, 320, 200, full_rows(0x55))
-    z = struct.pack(">I", len(inner)) + zlib.compress(inner, 9)
-    fs = list(S.iter_frames(fx.san([fx.frame(fx.fsub(b"ZFOB", z))])))
-    assert fs[0].index[0] == 0x55
-```
-
-- [ ] **Step 2:** Run → FAIL (stubs don't draw).
-- [ ] **Step 3:** Implement `_fobj`/`_zfb` exactly per rules (note: row start offset = `top * FRAME_W + left`; the RLE loop advances the *row* by FRAME_W, drawing `w` pixels from each row's start).
-- [ ] **Step 4:** `make check` PASS. Commit `"feat: FOBJ/ZFOB back-buffer compositing matching SmushPlayer"`.
-
----
-
-### Task 5: Vendored C++ oracle + differential harness
-
-**Files:**
-- Create: `vendor/san-oracle/` (fetched upstream files + `shim.h`, `bomp_core.cpp`, `codec1_core.cpp`, `oracle_main.cpp`, `build.sh`, `UPSTREAM.txt`), `tools/diff_oracle.py`, `tests/test_oracle_fixture.py`
-
-**Interfaces:**
-- Produces: `vendor/san-oracle/san-oracle dump FILE` → stdout stream of records `b"FRMK" + "<HH"(w,h) + pal[768] + index[w*h]`, one per FRME, byte order of frames identical to the file. Exit 2 + stderr message on unsupported codec / malformed stream.
-- Consumes: `iter_frames` for the Python side.
-
-Design: the oracle must not re-implement upstream — it *is* upstream:
-`bomp_core.cpp` and `codec1_core.cpp` are sed-extracted verbatim regions of the vendored `bomp.cpp`/`codec1.cpp`; `oracle_main.cpp` transcribes only the trivial chunk walk + the `handleDeltaPalette`/`handleNewPalette` bodies and the Dig-branch guards, calling `smushDecodeRLE`/`smushDecodeUncompressed`.
-
-- [ ] **Step 1: Vendor.**
+- [ ] **Step 1: Vendor (correct paths).**
 ```bash
-mkdir -p vendor/san-oracle && cd vendor/san-oracle
+mkdir -p vendor/san-oracle/upstream/engines/scumm/smush && cd vendor/san-oracle
 SHA=$(curl -s "https://api.github.com/repos/scummvm/scummvm/commits?per_page=1" | python3 -c "import json,sys;print(json.load(sys.stdin)[0]['sha'])")
-for p in engines/scumm/bomp.h engines/scumm/bomp.cpp engines/scumm/codec1.cpp engines/scumm/codec20.cpp engines/scumm/nut_renderer.cpp; do
-  curl -fsSL "https://raw.githubusercontent.com/scummvm/scummvm/$SHA/$p" -O
+for p in engines/scumm/bomp.h engines/scumm/bomp.cpp engines/scumm/nut_renderer.cpp \
+         engines/scumm/smush/codec1.cpp engines/scumm/smush/codec37.cpp \
+         engines/scumm/smush/codec37.h engines/scumm/smush/smush_player.cpp; do
+  curl -fsSL "https://raw.githubusercontent.com/scummvm/scummvm/$SHA/$p" -o "upstream/$p"
 done
-{ echo "scummvm commit: $SHA"; echo "verbatim upstream, GPL-3.0-or-later:"; shasum -a 256 bomp.h bomp.cpp codec1.cpp codec20.cpp nut_renderer.cpp; } > UPSTREAM.txt
-git add -A && git commit -m "chore: vendor upstream scummvm decode sources for the oracle"
+{ echo "scummvm commit: $SHA"; echo "verbatim upstream, GPL-3.0-or-later:"; \
+  (cd upstream && find . -type f -exec shasum -a 256 {} +); } > UPSTREAM.txt
 ```
-Expected: all 5 files non-empty; `grep -c 'void bompDecodeLine' bomp.cpp` = 1.
+Expected: 7 files non-empty; `grep -c 'SmushDeltaBlocksDecoder::decode' upstream/engines/scumm/smush/codec37.cpp` = 1.
 
-- [ ] **Step 2: `shim.h`**
+- [ ] **Step 2: `shim.h` + stub headers.**
+`shim.h` provides what the vendored TUs need:
 ```cpp
 #pragma once
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-typedef uint8_t byte;
+typedef uint8_t byte; typedef int8_t int8; typedef uint8_t uint8;
+typedef int16_t int16; typedef uint16_t uint16; typedef int32_t int32; typedef uint32_t uint32;
 #define READ_LE_UINT16(p) ((uint16_t)(p)[0] | ((uint16_t)(p)[1] << 8))
+#define READ_LE_UINT32(p) ((uint32_t)(p)[0] | ((uint32_t)(p)[1] << 8) | ((uint32_t)(p)[2] << 16) | ((uint32_t)(p)[3] << 24))
 #define READ_BE_UINT32(p) (((uint32_t)(p)[0] << 24) | ((uint32_t)(p)[1] << 16) | ((uint32_t)(p)[2] << 8) | (uint32_t)(p)[3])
 #define CLIP(v, lo, hi) ((v) < (lo) ? (lo) : ((v) > (hi) ? (hi) : (v)))
 #define error(...) do { fprintf(stderr, "oracle: " __VA_ARGS__); fputc('\n', stderr); exit(2); } while (0)
 ```
+Stub headers under `inc/`: `inc/common/scummsys.h` (typedefs, pulled from `shim.h`), `inc/common/endian.h` (`READ_LE_UINT16/UINT32`), `inc/common/textconsole.h` (empty), `inc/common/util.h` (empty). Each is one `#include "../shim.h"` line. Compile with `-I upstream/engines -I inc` so `"scumm/..."` resolves to the vendored files and `"common/..."` to the stubs.
 
-- [ ] **Step 3: `build.sh`** — extract, compile:
+- [ ] **Step 3: `build.sh`** — extract, compile, link:
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-awk '/^void bompDecodeLine\(byte \*dst, const byte \*src, int len, bool setZero\)/,/^}/' bomp.cpp > _bomp_body.cpp
-printf '#include "shim.h"\n' > bomp_core.cpp && cat _bomp_body.cpp >> bomp_core.cpp
-awk '/^void smushDecodeRLE/,/^}/' codec1.cpp > _c1.cpp
-awk '/^void smushDecodeUncompressed/,/^}/' codec20.cpp > _c20.cpp
-{ printf '#include "shim.h"\n#include "codec.h"\n'; cat _c1.cpp _c20.cpp; } > codec1_core.cpp
-printf '#pragma once\nvoid smushDecodeRLE(byte*, const byte*, int, int, int, int, int);\nvoid smushDecodeUncompressed(byte*, const byte*, int, int, int, int, int);\n' > codec.h
-clang++ -O1 -w -std=c++17 -lz -o san-oracle bomp_core.cpp codec1_core.cpp oracle_main.cpp
+# bompDecodeLine (both overloads) as a standalone TU
+awk '/^void bompDecodeLine\(byte \*dst, const byte \*src, int len, bool setZero\)/,/^}/' upstream/engines/scumm/bomp.cpp > _bomp_body.cpp
+grep -q 'setZero' _bomp_body.cpp || { echo "bomp extraction failed" >&2; exit 1; }
+{ printf '#include "shim.h"\n'; cat _bomp_body.cpp; } > bomp_core.cpp
+# codec37.cpp verbatim + oracle_main.cpp
+clang++ -O1 -w -std=c++17 -I upstream/engines -I inc -lz \
+  -o san-oracle bomp_core.cpp upstream/engines/scumm/smush/codec37.cpp oracle_main.cpp
 echo built: vendor/san-oracle/san-oracle
 ```
-(`bomp.cpp` also defines `bompDecodeLineReverse`/`drawBomp` needing ScummVM surfaces — excluded by the awk range. `smushDecodeRLE` needs `bompDecodeLine` — same TU link resolves it; the extracted region must be the `setZero` parameterless overload… verify after extraction: `grep -c 'bool setZero' _bomp_body.cpp` must be 1; if upstream's signature differs, adjust the awk pattern, not the body.)
+(If the 3-arg `bompDecodeLine(byte*, const byte*, int)` overload is also referenced by `codec37.cpp:573`, add a second awk range for it — verify with `grep -c 'bompDecodeLine' bomp_core.cpp`. Adjust the awk pattern, never the vendored body.)
 
-- [ ] **Step 4: `oracle_main.cpp`** (~130 lines): struct `SmushDig { uint8 pal[768]; int16 delta[768]; int32 shifted[768]; uint8 buf[320*200]; }` with `handleNewPalette`, `handleDeltaPalette` copied line-for-line from `/tmp`-reference `smush_player.cpp` (fetch it into the repo? No — copy the two function bodies and the FRME/FOBJ switch into `oracle_main.cpp`, replacing `debugC`/`assert` with nothing; MKTAG → 4-char literals). Frame walk: same BE-size + pad rules as `digart/san.py`. After each FRME: `fwrite("FRMK",1,4,stdout); write(w,h as u16LE, pal, buf)`. ZFOB: `inflateInit`/`inflate` with zlib header, same 14-byte header dispatch. Unsupported codec / big obj: exit(2).
+- [ ] **Step 4: `oracle_main.cpp`** — transcribe ONLY the Dig path from the vendored `smush_player.cpp`:
+  - Container walk: `ANIM` then `tag + u32BE payload-size + payload`, stride `chunk + 8 + size + (size & 1)` (payload-only; matches `digart/san.py`).
+  - `AHDR`: `pal = payload[6:774]`; `NPAL`: `pal = payload[0:768]` (assert ≥ 0x300).
+  - `XPAL`: copy `handleNewPalette`/`handleDeltaPalette` (`smush_player.cpp:815-853`) line-for-line: `uint8 pal[768]; int16 delta[768]; int32 shifted[768];` cmd 256 → `shifted[i] += delta[i]; pal[i] = CLIP(shifted[i] >> 7, 0, 255)`; else `shifted[j] = pal[j] << 7; delta[j] = READ_LE_UINT16(...)`; cmd 512 also reads 768 palette bytes.
+  - `FOBJ`: read the 14-byte LE header; apply the `decodeFrameObject` guards (`smush_player.cpp:865-884`) for `_insanity=false`, screen 320×200: `h>200||w>320` → skip; `h!=200||w!=320` → skip. Otherwise dispatch codec 37 to one persistent `SmushDeltaBlocksDecoder(320, 200).decode(buf, payload + 14)`; any other codec → `error(...)`.
+  - After each `FRME`: `fwrite("FRMK",1,4,stdout)`, write `w,h` as u16LE (320,200), then `pal[768]`, then `buf[64000]`.
+  - Ignore `IACT`/`TRES`/`PSAD`/`TEXT`/`STOR`/`FTCH`/`SKIP`/`LOAD`/`GOST` (audio/script; no back-buffer effect). Unknown sub-chunk → ignore.
 
-- [ ] **Step 5: `tools/diff_oracle.py`**:
+- [ ] **Step 5: `tools/diff_oracle.py`** — as the original plan (decode each file with `iter_frames` and with `san-oracle dump`; compare frame count, palette, index; exit 1 on any mismatch). This is the acceptance gate for Task 5; it will fail until the Python port lands.
+
+- [ ] **Step 6: `make check` PASS; `make oracle` builds.** Gate for this task: `san-oracle dump` exits 0 on all 55 files and emits **12638** `FRMK` records total. Do not weaken `tools/diff_oracle.py` to make it pass.
+
+- [ ] **Step 7: Commit** `"chore: vendor upstream scummvm decode sources + codec-37 oracle"`.
+
+
+---
+
+### Task 5: Codec 37 delta-blocks decoder port + 55/55 differential
+
+**Files:**
+- Create: `digart/codec37.py`, `tests/test_codec37.py`, `tests/test_oracle_fixture.py`
+- Modify: `digart/san.py`
+
+**Interfaces:**
+- Consumes: `bomp_decode_line`, `DecodeError`, the vendored `vendor/san-oracle/upstream/engines/scumm/smush/codec37.cpp` (authoritative), the `san-oracle` binary from Task 4.
+- Produces:
+  - `digart.codec37.DeltaBlocksDecoder(width: int, height: int, rebel2_variant: bool = False)` with `.decode(dst: bytearray, src: bytes) -> None` writing `width * height` bytes into `dst`; **stateful across calls** (mirrors the persistent `_deltaBlocksCodec`).
+  - `SanReader` holds one `DeltaBlocksDecoder(FRAME_W, FRAME_H)` per stream and calls it from `_fobj` for codec 37.
+
+Rules (port of `SmushPlayer::decodeFrameObject` codec-37 branch, Dig path `_insanity=False`):
+- Header (LE, 14 B): u16 codec, i16 left, i16 top, u16 w, u16 h, u16 objId, u16 parm2.
+- Guards, each returns silently and counts in `skipped`: `h > FRAME_H or w > FRAME_W` → `skip_big`; `(h, w) != (FRAME_H, FRAME_W)` → `skip_small`.
+- codec 37 → `decoder.decode(self.buf, payload[14:])`. Any other codec → `DecodeError(self.source, offset, f"unsupported codec {codec}")` (never fires on The Dig).
+- Port `SmushDeltaBlocksDecoder` **verbatim** from the vendored `codec37.cpp`: `makeTable` (including the full `makeTableBytes` table), `proc1`, `proc3WithFDFE`, `proc3WithoutFDFE`, `proc4WithFDFE`, `proc4WithoutFDFE`, `decode`. Preserve the buffer layout and state exactly: one `bytearray(delta_size)` (`delta_size = frame_size * 3 + 0x13600`) with `delta_bufs` as memoryviews at `+0x4D80` and `+0xE880 + frame_size`; `cur_table`, `prev_seq_nb`, `offset_table`, `table_last_pitch`, `table_last_index`. `decode` case 2 calls the 3-arg `bompDecodeLine(dst, src, len)` overload → `bomp_decode_line(delta_buf, delta_offs[cur], src, 16, decoded_size, set_zero=True)`.
+- Express `_deltaBufs[i]` as memoryviews into the single buffer so `dst + offsetTable[code] + nextOffs` and the `memset`/`memcpy` spans stay faithful in-bounds byte operations.
+
+- [ ] **Step 1: Write failing tests.**
+`tests/test_codec37.py` (hermetic):
 ```python
-"""Byte-exact differential: digart.san vs vendored upstream oracle. Exit 1 on any mismatch."""
-import struct, subprocess, sys
-from pathlib import Path
-from digart.san import iter_frames
+import struct
+from digart.codec37 import DeltaBlocksDecoder
 
-ORACLE = Path(__file__).resolve().parent.parent / "vendor/san-oracle/san-oracle"
-GAME = Path.home() / "Documents" / "The Dig®.app/Contents/Resources/game/game"
+def test_case0_raw_copy():
+    d = DeltaBlocksDecoder(320, 200)
+    # case 0: src[0]=0, src[1]=table idx, src[2:4]=seq, src[4:8]=decodedSize, src[8:12]?, src[12]=mask, payload at +16
+    body = bytes(range(256)) * 250                      # 64000 bytes
+    src = bytes([0, 0, 0, 0]) + struct.pack("<I", 64000) + bytes(4) + bytes([0]) + body
+    dst = bytearray(64000)
+    d.decode(dst, src)
+    assert bytes(dst) == body
 
-def oracle_records(p: Path):
-    r = subprocess.run([str(ORACLE), "dump", str(p)], capture_output=True)
-    if r.returncode:
-        sys.exit(f"oracle failed {p.name}: {r.stderr.decode(errors='replace').strip()}")
-    d, i = r.stdout, 0
-    while i < len(d):
-        if d[i:i + 4] != b"FRMK":
-            sys.exit(f"oracle record desync at {i} in {p.name}")
-        w, h = struct.unpack_from("<HH", d, i + 4); i += 8
-        pal = d[i:i + 768]; i += 768
-        idx = d[i:i + w * h]; i += w * h
-        yield w, h, pal, idx
-
-def main() -> int:
-    files = sorted(GAME.glob("VIDEO/*.SAN"))
-    bad = []
-    for p in files:
-        ours, theirs = list(iter_frames(p.read_bytes(), p.name)), list(oracle_records(p))
-        why = None
-        if len(ours) != len(theirs):
-            why = f"frame count {len(ours)} vs {len(theirs)}"
-        else:
-            for n, (f, rec) in enumerate(zip(ours, theirs)):
-                if (f.palette, f.index) != (rec[2], rec[3]):
-                    off = next((k for k in range(len(f.index)) if f.index[k] != rec[3][k]), "palette")
-                    why = f"frame {n} diff at {off}"; break
-        print(("ok  " if not why else "FAIL") + f" {p.name}" + (f"  {why}" if why else f"  ({len(ours)} frames)"))
-        if why:
-            bad.append(p.name)
-    print(f"\n{len(files) - len(bad)}/{len(files)} identical to oracle")
-    return 1 if bad else 0
-
-if __name__ == "__main__":
-    sys.exit(main())
+def test_case2_bomp_rows():
+    # case 2: BOMP row data at +16, decodedSize = payload length
+    row = bytes([0b0000_1111, 0x77])                    # RLE num=8 color 0x77
+    rows = (struct.pack("<H", len(row)) + row) * 200
+    src = bytes([2, 0, 0, 0]) + struct.pack("<I", len(rows)) + bytes(4) + bytes([0]) + rows
+    d = DeltaBlocksDecoder(320, 200)
+    dst = bytearray(64000)
+    d.decode(dst, src)
+    assert dst[:8] == bytes([0x77]) * 8
 ```
+(Adjust the case-0/case-2 `src` field offsets to the vendored header layout — `src[0]` variant, `src[1]` table index, `src[2:4]` seq, `src[4:8]` decodedSize, `src[12]` mask, compressed data at `+16`. The vendored file is authoritative; the brief's byte offsets are a reading aid.)
 
-- [ ] **Step 6: Fixture differential test** `tests/test_oracle_fixture.py`: skip if `ORACLE` missing; for the fixture SANs that draw (`test_san_draw`-style frames in tmp files), run `san-oracle dump` and compare record stream to `iter_frames` output — catches oracle/Python drift on synthetic streams.
-- [ ] **Step 7: Run `make check` → PASS. `make oracle` builds. Run `tools/diff_oracle.py` once manually on the smallest real file only** (`PIGOUT.SAN`, via a one-off copy of `oracle_records` loop or temporarily narrowing `GAME.glob`) — if mismatches appear: the vendored upstream region is authoritative; fix `digart/san.py`, never the extracted regions. Commit once the full 55/55 pass is achieved (may iterate within this task).
+`tests/test_oracle_fixture.py`: skip when `vendor/san-oracle/san-oracle` is absent; write synthetic SANs (from `tests/fixtures/make_fixtures.py`) to `tmp_path` and assert `san-oracle dump` and `iter_frames` agree on frame count/palette/index.
 
-- [ ] **Step 8: Commit** `"feat: vendored SMUSH oracle + byte-exact differential harness"`.
+- [ ] **Step 2:** Run `make check` → FAIL (module stub / `_fobj` still a counter).
+- [ ] **Step 3:** Port `digart/codec37.py` and wire it into `SanReader._fobj` (add `from .codec37 import DeltaBlocksDecoder`; keep `_zfb` removed or as an explicit `DecodeError`, since no `ZFOB` exists — do not carry dead zlib code).
+- [ ] **Step 4:** `make check` PASS, then `make verify` → **55/55 identical, 0 byte mismatches** (acceptance). If any file mismatches: the vendored upstream is authoritative — fix `digart/codec37.py`/`san.py`, never the oracle.
+- [ ] **Step 5: Commit** `"feat: port codec-37 delta-blocks decoder; 55/55 byte-exact vs oracle"`.
+
 
 ---
 
@@ -764,7 +701,7 @@ def rec_id(kind: str, source: str, frame: int) -> str:
 - Consumes: `bomp_decode_line`, `DecodeError`.
 - Produces: `NutImage(name: str, index: bytes, width: int, height: int, palette: bytes)`; `iter_images(data: bytes, source: str) -> Iterator[NutImage]`. `name = f"{Path(source).stem.lower()}:{i:03d}"`. Index 0 = transparent (decided by writer).
 
-- [ ] **Step 0: Read the vendored truth.** Open `vendor/san-oracle/nut_renderer.cpp`, function `loadFont` (and `NutRenderer::codec1` / `codec21` just below it). The port is a *transcription*, not a reinterpretation: chunk pre-scan strides, `READ_LE_UINT16(dataSrc + offset + 14/+16)` glyph geometry, FRME payload → `FOBJ`-style rows, `smushDecodeRLE` into a glyph-sized buffer with pitch = glyph width (font path has NO screen-size guard). Glyph codec is 1 (BOMP rows) or 21; implement `nut_codec21` as given in this plan's appendix note below. Palette: NUT files carry the same AHDR 768-byte palette at payload[6:774] as SAN.
+- [ ] **Step 0: Read the vendored truth.** Open `vendor/san-oracle/upstream/engines/scumm/nut_renderer.cpp`, function `loadFont` (and `NutRenderer::codec1` / `codec21` just below it). The port is a *transcription*, not a reinterpretation: chunk pre-scan strides, `READ_LE_UINT16(dataSrc + offset + 14/+16)` glyph geometry, FRME payload → `FOBJ`-style rows, `smushDecodeRLE` into a glyph-sized buffer with pitch = glyph width (font path has NO screen-size guard). Glyph codec is 1 (BOMP rows) or 21; implement `nut_codec21` as given in this plan's appendix note below. Palette: NUT files carry the same AHDR 768-byte palette at payload[6:774] as SAN.
 - [ ] **Step 1: Fixture + failing tests**: `mk_nut(num_chars=2, glyphs=[(8,8,index0bytes),(16,6,...)])` building AHDR(numChars@+2) + per-glyph `be(b"???", meta)` + `be(b"FRME", be(b"FOBJ", hdr+rows))` shapes matching the transcribed stride; assert `width/height` + first pixel + palette bytes. `@pytest.mark.game` test: `iter_images(FONT0.NUT.read_bytes())` yields ≥1 image, `all(0 < im.width and im.height)`.
 - [ ] **Step 2: Implement `digart/nut.py`** per Step 0 transcription (raise `DecodeError` on stride desync).
 - [ ] **Step 3: PASS + commit** `"feat: NUT glyph/icon extraction"`.
@@ -827,8 +764,9 @@ def nut_codec21(buf, off, src, s_off, w, h, pitch):
 ```
 Port `off`/`dst` cursor exactly from the vendored C (`NutRenderer::codec21`); this appendix is a reading aid, the vendored file is authoritative.
 
-## Plan Self-Review (done at authoring; re-check after any task deviation)
+## Plan Self-Review (re-checked after the codec-37 re-plan)
 
-- Spec coverage: §2→T9 preflight; §3→T3/4 (SAN), T7 (NUT), T8 (LA1); §4→T2-T4, T7, T8 (format rules restated verbatim in each task); §5→T6 (+ ids via `rec_id`); §6→T9; §7→T5; §8→per-task test steps + T9 Step 3; §9→error paths in every module; §11→T9 disk preflight; §12→T9 Steps 3-4.
-- Placeholders: none — every code step carries real code or a real command with its expected result. Two steps deliberately instruct "transcribe the vendored function" instead of re-typing 100+ lines; the vendored file is the content.
-- Type consistency: `iter_frames(data, source)` (T3→T5→T9), `SanFrame.index/.palette` (T3→T6), `iter_images(data, source)` (T7→T9), `iter_bitmaps(la0, la1, errors)` (T8→T9), `AssetRecord`/`rec_id` (T6→T9), `DecodeError.to_dict` (T1→T6 `_errors.json`).
+- Spec coverage: §2→T9 preflight; §3→T3/T5 (SAN), T7 (NUT), T8 (LA1); §4→T2-T5, T7, T8 (format rules restated verbatim in each task); §5→T6 (+ ids via `rec_id`); §6→T9; §7→T4/T5 (oracle then port); §8→per-task test steps + T9 Step 3; §9→error paths in every module; §11→T9 disk preflight; §12→T9 Steps 3-4.
+- Verified against the bundle: all 12,637 `FOBJ` are codec 37; no codec 1/3/20, no `ZFOB`; all 14,959 `IACT` are audio-only; 12,638 `FRME` total. The plan's SAN path matches this (Tasks 4-5).
+- Placeholders: none — every code step carries real code or a real command with its expected result. Three steps deliberately instruct "transcribe the vendored function" instead of re-typing 100+ lines (T4 `oracle_main.cpp`, T5 `codec37.py`, T7 `nut.py`); the vendored file is the content.
+- Type consistency: `iter_frames(data, source)` (T3→T5→T9), `SanFrame.index/.palette` (T3→T6), `DeltaBlocksDecoder.decode(dst, src)` (T5), `san-oracle dump` FRMK records (T4→T5), `iter_images(data, source)` (T7→T9), `iter_bitmaps(la0, la1, errors)` (T8→T9), `AssetRecord`/`rec_id` (T6→T9), `DecodeError.to_dict` (T1→T6 `_errors.json`).

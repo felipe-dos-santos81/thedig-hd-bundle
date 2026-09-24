@@ -61,13 +61,18 @@ of BE-tagged, BE-sized, even-padded sub-chunks:
   deltas and then a full palette; command 256 applies accumulated deltas
   (`shifted += delta; color = clip(shifted >> 7)`), exactly as
   `SmushPlayer::handleDeltaPalette`.
-- `FOBJ` — draw object: u16LE codec (1 or 3 → row-BOMP RLE; 20 → uncompressed), i16LE
-  left, i16LE top, u16LE width, u16LE height, 4 reserved LE bytes; payload = per row
-  [u16LE row-size][BOMP bytes]. BOMP `bompDecodeLine(setZero=false)`: literal bytes equal
-  to 0 leave the back-buffer pixel unchanged — for The Dig **index 0 is "keep previous
-  pixel"**, not transparency.
-- `ZFOB` — u32BE inflated size + zlib stream wrapping a `FOBJ`.
-- `PSAD`, `IACT`, `TRES`, `TEXT`, `STOR`, `FTCH`, `SKIP`, `LOAD`, `GOST` — audio, game
+- `FOBJ` — draw object: u16LE codec, i16LE left, i16LE top, u16LE width, u16LE height,
+  4 reserved LE bytes. **Every `FOBJ` in The Dig uses codec 37**
+  (`SMUSH_CODEC_DELTA_BLOCKS`); codecs 1/3/20 and `ZFOB` never occur in the bundle
+  (verified over all 55 files). Codec 37 is `SmushDeltaBlocksDecoder`
+  (`engines/scumm/smush/codec37.cpp`): a **stateful** delta-block decoder constructed
+  once per stream with the 320×200 frame size, which writes a complete frame into the
+  back buffer on every call. It uses the 3-argument `bompDecodeLine(dst, src, len)`
+  (`setZero = true`) for its case-2 path. Objects whose size differs from 320×200 are
+  skipped, exactly as `SmushPlayer::decodeFrameObject` does.
+- `IACT` — action/audio chunk: in The Dig every `IACT` is audio-only
+  (`code = 8, flags = 46`) and has no back-buffer effect.
+- `PSAD`, `TRES`, `TEXT`, `STOR`, `FTCH`, `SKIP`, `LOAD`, `GOST` — audio, game
   scripting, and font-overlay chunks: skipped. Text/HUD is a runtime overlay and is
   deliberately **not** baked into extracted frames — clean video-buffer imagery is the
   regeneration source.
@@ -81,7 +86,7 @@ frame; SAN output PNGs are opaque RGB (no alpha).
 ### 4.2 NUT
 LucasArts `.nut` = an SMUSH `ANIM`/`AHDR` container (glyph count = u16LE at AHDR+10)
 followed by two chunks per glyph: metadata (glyph width u16LE @+14, height u16LE @+16)
-and a `FRME` with the glyph pixels (row-BOMP `FOBJ`, codec 1/21), per ScummVM's
+and a `FRME` with the glyph pixels (row-BOMP `FOBJ`, codec 1/21/44), per ScummVM's
 `NutRenderer::loadFont`. Glyph/icon index 0 **is** the transparent color → each glyph is
 emitted as RGBA PNG.
 
@@ -168,11 +173,12 @@ thedig-textures verify  [--out <dir>]
 
 ## 7. Pixel-exact verification (oracle)
 
-- `vendor/san-oracle/` holds pinned upstream files that carry the decode logic in
-  self-contained functions: `engines/scumm/bomp.cpp` (`bompDecodeLine`) and
-  `engines/scumm/codec1.cpp` (`smushDecodeRLE`), plus a `oracle.cpp` harness that
-  transcribes the `FRME`/`FOBJ`/`NPAL`/`XPAL` walk and back-buffer rules from
-  `engines/scumm/smush/smush_player.cpp`. `build.sh` compiles it into `san-oracle`;
+- `vendor/san-oracle/` holds pinned upstream files that carry the decode logic:
+  `engines/scumm/bomp.cpp` (`bompDecodeLine`), `engines/scumm/smush/codec37.cpp`
+  (`SmushDeltaBlocksDecoder` — the codec The Dig actually uses, compiled **verbatim**
+  behind a shim), and `engines/scumm/smush/smush_player.cpp` as the transcription
+  reference for the `FRME`/`FOBJ`/`NPAL`/`XPAL` walk and the `decodeFrameObject`
+  guards. `build.sh` compiles `codec37.cpp` verbatim into `san-oracle`;
   `san-oracle dump FILE` emits, per frame, a fixed binary record: dimensions, active
   768-byte palette, indexed pixels. (Note: scummvm-tools' `compress_scumm_san` was
   evaluated and rejected — it rewrites headers and strips audio but never decodes
