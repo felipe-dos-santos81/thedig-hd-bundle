@@ -3,13 +3,117 @@ room_001:
   caption: ''
 room_002:
   kind: scene
-  caption: ''
+  style: rendered
+  caption: >-
+    SCENE: Exterior space view. A white space shuttle, seen from above and behind with its payload bay doors open, occupies the left third; a dark, irregular, cratered asteroid sits whole in the right quarter. Deep black void with sparse stars and faint nebulous blue patches fills the rest.
+
+
+    MEDIUM: Pre-rendered 3D with painted/airbrushed textures. Evidence: hard CGI shading on hull panels, airbrushed radial glow around the star, painterly mottled surface on the moon.
+
+
+    VIEW: Wide landscape framing. Slight low-angle perspective looking up at the ship's upper deck; flat orthographic-style distance for the celestial bodies.
+
+
+    LAYOUT:
+
+    - Shuttle (foreground/midground): x0–0.37, y0–1. Tail fin at the top left (x0.1, y0–0.22); the fuselage runs from there down to the nose and cockpit windows at the bottom (x0.15–0.31, y0.66–1). Both payload bay doors stand open: ribbed panels to the left (x0–0.12) and right (x0.22–0.37) of the open bay, whose cargo is visible inside.
+
+    - Star (background): x0.45–0.6, y0.1–0.35. Bright yellow core with diffuse orange halo.
+
+    - Asteroid (background): x0.73–0.96, y0.05–0.95. Irregular, heavily cratered rock, fully inside the frame, mostly in shadow.
+
+    - Stars (background): scattered points across full frame.
+
+
+    OBJECTS:
+
+    - Shuttle: payload bay doors open (the two ribbed panels either side of the fuselage are the doors), cargo visible in the bay, cockpit windows at the nose, tail fin at the top left, small red markings on the hull.
+
+    - Asteroid: no visible structures or openings.
+
+    - No doors, machines, crystals, plates, or furniture other than the ship itself.
+
+
+    LIGHTING: Primary source is the star (upper center). It casts strong highlights on the top surfaces of the ship’s hull and creates deep shadows on its underside and rear. The asteroid is backlit; only its left rim catches light, leaving the face in darkness. Overall exposure is high-contrast; most of the frame is near-black.
+
+
+    PALETTE:
+
+    - Ship: bright white/light grey with cool blue-grey shadows.
+
+    - Star: intense yellow-white core fading to amber/orange.
+
+    - Asteroid: desaturated blue-grey, almost black in shadow areas.
+
+    - Background: pure black with tiny white/blue star pixels.
+
+
+    TEXT: none
+
+
+    INVARIANTS:
+
+    - The shuttle stays anchored to the left edge, tail at the top left and nose pointing down to the bottom edge.
+
+    - Star must sit in upper-center, unobstructed.
+
+    - The asteroid stays whole inside the frame at the right (x0.73–0.96), not cropped.
+
+    - The gap between the shuttle and the asteroid must remain empty black space.
+
+    - Relative scale: the shuttle appears closer and larger than the asteroid.
+
+    - No people are present in the background.
 room_003:
   kind: scene
   caption: ''
 room_004:
   kind: scene
-  caption: ''
+  style: painted
+  caption: >-
+    SCENE: Exterior space view. A massive, pockmarked celestial body dominates the right two-thirds of the frame against a starfield.
+
+
+    MEDIUM: Painted: a soft, airbrushed digital painting with smooth gradients and diffuse shading on the asteroid surface; pixel stars in the background.
+
+
+    VIEW: Close-up view. The camera is positioned near the limb of the object, looking across its curved surface from left to right.
+
+
+    LAYOUT:
+
+    *   **Celestial Body:** Occupies roughly x=0.25 to x=1.0 (right 75% of width) and y=0 to y=1.0 (full height). It curves from the top-left down to the bottom-right.
+
+    *   **Starfield:** Fills the negative space on the left, x=0 to x=0.45.
+
+    *   **Surface Features:** Large, deep craters are visible. One prominent dark circular crater is centered at approximately x=0.8, y=0.75. Another large depression is at x=0.6, y=0.4. Smaller impact marks cover the rest of the surface.
+
+
+    OBJECTS: No doors, machines, or furniture. The scene consists solely of the rocky/icy planetary surface and distant stars. No people.
+
+
+    LIGHTING: Low-key lighting. The light source appears to be off-screen to the left, illuminating the left-facing slopes of the craters and the main limb of the planet. The right side of the object falls into deep shadow. Shadows within the craters are dark but not pure black, retaining some purple hue.
+
+
+    PALETTE:
+
+    *   **Space:** Black (#000000) with white, grey, and faint yellow/orange pixel stars.
+
+    *   **Planet Surface:** Muted purples, lavenders, and dusty mauves. Highlights are pale periwinkle; shadows are deep violet-black.
+
+
+    TEXT: None.
+
+
+    INVARIANTS:
+
+    *   The diagonal curve of the planet's limb separating the starfield from the surface.
+
+    *   The specific placement and depth of the large crater at the lower right.
+
+    *   The contrast between the illuminated left edge of the planet and the shadowed right interior.
+
+    *   The sparse distribution of stars in the upper-left quadrant.
 room_005:
   kind: scene
   caption: ''
@@ -30,7 +134,51 @@ room_010:
   caption: ''
 room_011:
   kind: scene
-  caption: ''
+  style: painted
+  caption: >-
+    SCENE: An alien sand canyon under a huge overhanging wall of carved stone blocks. Below the wall, pale sand dunes lead down to a wide floor of rippled sand with standing rocks. A small arched opening at the base of the wall glows green. The atmosphere is warm, dusty and enclosed.
+
+
+    MEDIUM: Painted: hand-painted art, with dithering for the gradients in the shadows and the sand ripples, and soft airbrushed transitions on the lit stone.
+
+
+    VIEW: Eye-level perspective looking slightly upward into the depth of the room. The framing captures a wide view of the space, anchored by foreground rocks at the bottom.
+
+
+    LAYOUT:
+
+    - Foreground (0.23–0.55 width, 0.65–1.0 height): A large cracked, light-tan boulder rises from the bottom edge; a smaller rock sits at the left (0.0–0.18 width, 0.55–0.7 height).
+
+    - Middle Ground (0.0–1.0 width, 0.47–1.0 height): A broad floor of rippled sand, banded in orange and purple, stretches across the canyon; two standing rocks rise on the right (0.77–0.93 width, 0.45–0.7 height).
+
+    - Background (0.0–1.0 width, 0.0–0.47 height): A huge overhanging wall of carved rectangular stone blocks fills the top, with a dark recess at the upper right (0.73–0.85 width, 0.15–0.35 height); pale sand dunes slope up against its base.
+
+    - Center Detail (0.44–0.52 width, 0.38–0.48 height): A small arched opening at the base of the wall holds a cluster of glowing green lights.
+
+
+    OBJECTS:
+
+    - Stone Walls: Composed of large, irregular masonry blocks covering the upper half of the scene.
+
+    - Floor: Rippled sand in horizontal bands, orange on the crests and purple in the troughs.
+
+    - Green Lights: About ten bright green lights in a loose circle inside the arched opening at the centre of the wall's base.
+
+    - Rocks: A large cracked light-tan boulder in the foreground, a smaller rock at the left, two standing rocks on the right.
+
+    - No doors, furniture, or machines are visible.
+
+
+    LIGHTING: Strong, warm directional light enters from the top left, casting long, soft highlights along the upper left wall and the tops of the foreground rocks. The right side of the room and the deep recesses of the floor fall into heavy, cool-toned shadow (purple/blue).
+
+
+    PALETTE: Dominated by warm oranges, ochres, and rust browns on the lit surfaces. Shadows are rendered in deep purples, indigos, and blacks. The only non-earth-tone color is the neon green of the central lights.
+
+
+    TEXT: None.
+
+
+    INVARIANTS: The overhanging wall fills the top and meets the dunes at mid-height. The arched opening with the green lights stays at the centre of the wall's base. The foreground rocks must maintain their specific placement to frame the bottom edge without blocking the view of the middle ground.
 room_012:
   kind: scene
   caption: ''
@@ -78,7 +226,51 @@ room_026:
   caption: ''
 room_027:
   kind: scene
-  caption: ''
+  style: rendered
+  caption: >-
+    SCENE: A vertical, symmetrical alien interior or cavern shaft. The architecture is non-rectilinear, composed of angular rock formations and crystalline structures. The atmosphere is dark, mystical, and high-contrast.
+
+
+    MEDIUM: Pre-rendered 3D with painterly textures. Evidence includes hard-edged polygonal geometry on the crystals, airbrushed gradients in the light beams, and flat-shaded surfaces typical of low-poly CGI.
+
+
+    VIEW: A frontal, symmetrical perspective looking slightly upward into a deep chasm or chamber. The framing is a tall portrait orientation, emphasizing verticality.
+
+
+    LAYOUT:
+
+    *   **Background (Top):** An orange-glowing cavern ceiling or upper chamber (0-0.2 height) centered at x=0.5.
+
+    *   **Middle Ground:** A large, inverted cone or funnel-shaped crystal structure dominates the center (x=0.5), spanning from y=0.2 to y=0.6. It rests on a wide, horizontal stone platform or shelf that crosses the width at y=0.25.
+
+    *   **Foreground/Bottom:** Below the central cone, a diamond-shaped opening reveals a blue energy field (y=0.6-0.8). At the very bottom (y=0.8-1.0), a bright blue starburst light source sits within a geometric frame.
+
+    *   **Sides:** Dark, angular rock pillars flank the left (x=0-0.2) and right (x=0.8-1) edges, creating a tunnel effect.
+
+
+    OBJECTS:
+
+    *   **Central Cone:** A large, translucent purple/blue crystal formation pointing downward, filled with vertical black streaks.
+
+    *   **Platform:** A rough-hewn, reddish-orange stone shelf supporting the top of the central cone. Two small dark rocks sit on its left side (x=0.2, y=0.25).
+
+    *   **Energy Field:** A horizontal band of crackling blue electricity or liquid light surrounding the base of the central cone.
+
+    *   **Light Source:** A brilliant white-blue starburst at the bottom center (x=0.5, y=0.9), emitting radial beams.
+
+    *   **Diamond Frame:** A dark, four-sided geometric border separating the middle energy field from the bottom light source.
+
+
+    LIGHTING: Dual-source lighting. A warm orange glow emanates from the top, illuminating the underside of the upper ceiling and the top of the central platform. A cool, intense blue light emanates from the bottom, backlighting the central cone and illuminating the lower rock faces. Shadows are deep and saturated in the corners.
+
+
+    PALETTE: High contrast complementary colors. Top half: Deep purples, blacks, and glowing oranges/reds. Bottom half: Deep blues, cyans, and electric whites.
+
+
+    TEXT: None.
+
+
+    INVARIANTS: The strict bilateral symmetry of the composition. The alignment of the central axis (top glow, central cone, diamond, bottom star). The distinct separation between the warm upper zone and cool lower zone. No people.
 room_028:
   kind: insert
   caption: ''
@@ -126,7 +318,57 @@ room_042:
   caption: ''
 room_043:
   kind: scene
-  caption: ''
+  style: painted
+  caption: >-
+    SCENE: Exterior canyon ledges. Sunlit orange rock ledges and a dark, speckled crevice fill the left and centre; across a chasm on the right, towering pale blue cliffs fall away.
+
+
+    MEDIUM: Painted. Visible evidence includes soft airbrushing on the orange rock textures, dithering patterns in the dark central recess, and visible brushstrokes defining the striations in the background cliffs.
+
+
+    VIEW: High-angle perspective looking down across the rock ledges toward the cliffs on the far side of the chasm. The framing is tight on the foreground rocks, which dominate the left and bottom of the frame.
+
+
+    LAYOUT:
+
+    *   **Foreground/Middle Ground (Left & Bottom):** Large, jagged rock masses occupy the left half (0 to 0.5) and bottom edge (0.7 to 1.0). These are rendered in warm oranges and browns.
+
+    *   **Middle Ground (Center):** A dark, recessed crevice with speckled, star-like highlights runs diagonally from (0.3, 0.25) down to (0.55, 0.8). To its lower right the rocks fall into purple shadow (0.55 to 0.95 horizontally, 0.55 to 1.0 vertically).
+
+    *   **Background (Right):** Pale blue cliffs across the chasm occupy the top right (0.55 to 1.0 horizontally, 0 to 0.6 vertically) and continue down the right edge to the bottom (0.9 to 1.0 horizontally, 0.4 to 1.0 vertically).
+
+
+    OBJECTS:
+
+    *   **Rock Formations:** Massive, irregular stone structures form the walls and floor. No doors, furniture, machines, or distinct props are present.
+
+    *   **Chasm:** The gap between the ledges and the cliffs on the right.
+
+
+    LIGHTING: Strong directional light enters from the upper right, illuminating the tops of the foreground rocks in bright orange and yellow. The interior recesses and the underside of the overhangs remain in deep shadow. The background cliffs are lit by ambient daylight, appearing cool and desaturated compared to the foreground.
+
+
+    PALETTE:
+
+    *   **Foreground Rocks:** High-saturation oranges, burnt siennas, and dark browns.
+
+    *   **Shadows/Recesses:** Deep purples, near-black blues, and speckled white/yellow points.
+
+    *   **Background:** Cool periwinkle blues, lavenders, and pale greys for the distant cliffs and sky.
+
+
+    TEXT: None.
+
+
+    INVARIANTS:
+
+    *   The diagonal division between the warm, close-up rocks (bottom-left to top-center) and the cool, distant background (top-right).
+
+    *   The specific shape of the rock overhang creating the "frame" for the background view.
+
+    *   The contrast in temperature: intense warmth in the foreground versus cold tones in the distance.
+
+    *   No people are painted into the background.
 room_044:
   kind: scene
   caption: ''
@@ -177,7 +419,51 @@ room_059:
   caption: ''
 room_060:
   kind: scene
-  caption: ''
+  style: painted
+  caption: >-
+    SCENE: Interior of a stone structure, likely a ruin or temple. The architecture is defined by massive, angular rock and carved blocks. The atmosphere is enclosed and ancient.
+
+
+    MEDIUM: Painted. Evidence includes visible brushstrokes in the rock textures, airbrushed gradients on the curved surfaces, and distinct dithering patterns characteristic of 256-colour digital painting.
+
+
+    VIEW: Eye-level, slightly low angle looking up towards an opening in the upper right. The framing is tight, focusing on the immediate structural elements.
+
+
+    LAYOUT:
+
+    *   **Background (Upper Right):** A bright, irregular blue-lit opening with a blue crystalline structure inside occupies the top right corner (x: 0.78-1.0, y: 0.0-0.35).
+
+    *   **Middle Ground (Center/Left):** A large, pale yellow stone pillar or archway dominates the center (x: 0.3-0.7, y: 0.0-0.8), angling down towards the left. Behind it to the left, tiled stone floor slabs recede in perspective into a dark area (x: 0.0-0.4, y: 0.2-0.8).
+
+    *   **Foreground (Bottom):** Rough, uneven rocky ground spans the bottom edge (y: 0.7-1.0). A cluster of dark, indistinct debris or rubble sits centrally at the base of the pillar (x: 0.4-0.7, y: 0.7-1.0). A large rounded tan rock fills the lower right corner (x: 0.68-1.0, y: 0.65-1.0).
+
+
+    OBJECTS:
+
+    *   **Pillar/Arch:** A large, smooth-faced stone structure with beveled edges, running diagonally from top-center to mid-left.
+
+    *   **Opening:** An irregular aperture in the upper right, with a blue crystalline structure inside it.
+
+    *   **Floor Slabs:** Tiled stone slabs in perspective in the shadowed area on the left.
+
+    *   **Rounded Rock:** A large rounded tan rock in the lower right corner.
+
+    *   **Debris:** A pile of dark, textured material at the foot of the central pillar.
+
+    *   **Doors:** None visible.
+
+
+    LIGHTING: Primary light source is from the upper right opening, casting a cool blue-white glow. Secondary warm light illuminates the face of the central pillar from the front-right, creating strong contrast with the deep shadows on the left and under the arch.
+
+
+    PALETTE: Dominant ochre, tan, and pale yellow for the stone. Deep browns and blacks for shadows. Cool cyan and white for the light source in the upper right.
+
+
+    TEXT: None.
+
+
+    INVARIANTS: The diagonal sweep of the central pillar from top-center to lower-left. The high-contrast lighting split between the warm interior stone and the cool light from the upper-right opening. The tiled floor slabs on the left and the rounded rock in the lower right corner. The rough texture of the foreground floor contrasting with the smoother pillar faces. No people.
 room_061:
   kind: scene
   caption: ''
