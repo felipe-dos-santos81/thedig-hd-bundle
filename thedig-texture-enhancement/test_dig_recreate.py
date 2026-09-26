@@ -740,6 +740,13 @@ class ObjectTests(DriverFixture):
         code, out, _ = self.run_cli("verify", "--object", "obj011_01")
         self.assertIn("WRONGSIZE  obj011_01", out)
         self.assertNotIn("room_", out)
+        # Ruling: stale means the room changed, not that some other process wrote the
+        # file. A hand-replaced output with no promoted record stays "done"; no render.
+        Image.new("RGB", (192, 128)).save(self.obj_dst / "obj010_02.png")
+        _, _, _, stub = self.objects("--object", "obj010_02")
+        self.assertEqual(stub.render.call_count, 0)
+        code, out, _ = self.run_cli("verify", "--object", "obj010_02")
+        self.assertIn("UNRECORDED obj010_02", out)
 
 
 class ReviewTests(DriverFixture):
@@ -773,6 +780,15 @@ class ReviewTests(DriverFixture):
             self.assertIn("skipped=4", out)
             _, _, _, vlm = self.review("--force", "--room", "1")
             self.assertEqual(vlm.review.call_count, 1)
+        with self.subTest("reviews the promoted attempt's own de-dither, not the default"):
+            record_path = self.dst / ".quality/room_001/attempt-1.json"
+            record = json.loads(record_path.read_text())
+            record["dedither"] = "none"
+            record_path.write_text(json.dumps(record))
+            with patch.object(room_geometry, "build_guide",
+                              wraps=room_geometry.build_guide) as guide:
+                self.review("--force", "--room", "1")
+            self.assertEqual(guide.call_args.args[1], "none")
 
     def test_a_rejection_sends_the_room_back_to_batch(self):
         def verdict(pairs, *a, **kw):

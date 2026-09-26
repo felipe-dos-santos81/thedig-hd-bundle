@@ -684,13 +684,15 @@ def object_selection(args):
 
 
 def object_status(args, obj, reviews, room_sha):
-    """room_status of the object, plus stale: done, but painted over a room
-    output other than the current one (room_sha)."""
+    """room_status of the object, plus stale: done, but its promoted record
+    named a room output other than the current one (room_sha). A done object
+    whose current output file no attempt record promoted (a hand-replaced
+    file) keeps its status unchanged; verify reports that file UNRECORDED."""
     status, attempt = room_status(args.obj_dst, obj, reviews)
     if status == "done":
         record = promoted_record(audit_dir(args.obj_dst, obj),
                                  source_tree.file_sha256(args.obj_dst / obj.out_name))
-        if record is None or record.get("room_sha256") != room_sha:
+        if record is not None and record.get("room_sha256") != room_sha:
             return "stale", attempt
     return status, attempt
 
@@ -902,10 +904,11 @@ def cmd_objects(args):
 
 # ---- review -----------------------------------------------------------------
 
-def review_images(src, room, output):
-    """([(guide window, render window), ...], whole render) for the VLM."""
+def review_images(src, room, output, method=room_geometry.DEDITHER_METHOD):
+    """([(guide window, render window), ...], whole render) for the VLM: the
+    guide is rebuilt with `method`, the de-dither the promoted attempt used."""
     image = source_tree.open_rgba(src, room)
-    guide = room_geometry.build_guide(image)
+    guide = room_geometry.build_guide(image, method)
     plan = room_geometry.plan_room(image)
     with Image.open(output) as im:
         render = im.convert("RGB")
@@ -941,7 +944,8 @@ def cmd_review(args):
             continue
         print(f"[{i}/{len(rooms)}] review {room.key} (attempt {attempt})", flush=True)
         try:
-            pairs, overview = review_images(args.src, room, dst)
+            method = record.get("dedither", room_geometry.DEDITHER_METHOD)
+            pairs, overview = review_images(args.src, room, dst, method)
             verdict = review_room(pairs, overview, entry.kind, entry.caption,
                                   comfy_client.http_json, VLM_BASE_URL, VLM_MODEL, VLM_API_KEY,
                                   style=entry.style or "painted")
