@@ -184,6 +184,16 @@ class CheckTests(unittest.TestCase):
             self.assertLess(abs(result.window_shifts[0][0]), gc.MAX_SHIFT)
             self.assertGreaterEqual(abs(result.window_shifts[1][0]), gc.MAX_SHIFT)
 
+    def test_transparent_pixels_do_not_count_as_lost_edges(self):
+        source = Image.new("RGB", (32, 32), (40, 40, 40))
+        source.paste((220, 220, 220), (0, 0, 32, 8))     # an edge along row 8
+        render = Image.new("RGB", (128, 128), (40, 40, 40))  # the edge is gone
+        opaque = np.ones((32, 32), bool)
+        opaque[:12] = False                               # the edge lies in the transparent part
+        self.assertLess(gc.check(render, source).edge_agreement, gc.MIN_EDGE_AGREEMENT)
+        self.assertEqual(gc.check(render, source, opaque=opaque).edge_agreement, 1.0)
+        self.assertEqual(gc.check(render, source, min_edges=10_000).edge_agreement, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

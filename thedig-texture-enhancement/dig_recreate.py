@@ -152,6 +152,14 @@ def image_info(path):
         return None
 
 
+def alpha_matches(path, source):
+    """True when the image at `path` is RGBA with `source`'s alpha scaled 4x nearest."""
+    want = source.convert("RGBA").getchannel("A").resize(
+        (source.width * SCALE, source.height * SCALE), Image.Resampling.NEAREST)
+    with Image.open(path) as im:
+        return im.mode == "RGBA" and im.getchannel("A").tobytes() == want.tobytes()
+
+
 # ---- verify -----------------------------------------------------------------
 
 def cmd_verify(args):
@@ -168,8 +176,10 @@ def cmd_verify(args):
             code, detail = "UNREADABLE", ""
         elif info[0] != want:
             code, detail = "WRONGSIZE", f"is {info[0][0]}x{info[0][1]}, expected {want[0]}x{want[1]}"
-        elif info[1] != "RGB":
-            code, detail = "WRONGMODE", f"is {info[1]}, expected RGB"
+        elif info[1] != room.mode:
+            code, detail = "WRONGMODE", f"is {info[1]}, expected {room.mode}"
+        elif room.has_alpha and not alpha_matches(dst, source_tree.open_rgba(args.src, room)):
+            code, detail = "WRONGALPHA", "the alpha is not the source's, 4x nearest"
         elif (entries[room.key].kind != "skip" and promoted_record(
                 audit_dir(args.dst, room), source_tree.file_sha256(dst)) is None):
             code, detail = "UNRECORDED", ("no attempt record promoted this file - "
@@ -227,7 +237,7 @@ def cmd_caption(args):
 
 # ---- render one room --------------------------------------------------------
 
-def finish_room(canvas, guide, plan, image, strength):
+def finish_room(canvas, guide, plan, image, strength, has_alpha=False):
     """The stitched 4x `canvas`, cropped to the room's exact 4x size,
     colour-matched toward the guide by `strength`, fixed up, and checked against
     the de-dithered source: (final image, GeometryResult, Boundaries)."""
@@ -236,12 +246,18 @@ def finish_room(canvas, guide, plan, image, strength):
                            f"expected {guide.full.width}x{guide.full.height}")
     size = (image.width * SCALE, image.height * SCALE)
     reference = guide.full.crop((0, 0) + size)
-    matched = colour_match.match(canvas.crop((0, 0) + size), reference, strength)
+    opaque = room_geometry.opaque_mask(image)
+    partial = not opaque.all()
+    matched = colour_match.match(canvas.crop((0, 0) + size), reference, strength,
+                                 mask=room_geometry.opaque_mask(image, SCALE) if partial else None)
     final = room_geometry.apply_fixups(matched, plan, image)
     boundaries = room_geometry.stitch_boundaries(plan)
     result = geometry_check.check(final, guide.native, [w.box for w in plan.windows],
                                   boundaries.columns, reference=reference,
-                                  rows=[y for y in boundaries.rows if y < size[1]])
+                                  rows=[y for y in boundaries.rows if y < size[1]],
+                                  opaque=opaque if partial else None)
+    if has_alpha:
+        final = room_geometry.with_alpha(final, image)
     return final, result, boundaries
 
 
@@ -313,7 +329,8 @@ def render_room(args, workflow, room, entry, corrections):
                      f"workflow: {workflow.name}\n\n" + "\n\n".join(prompt_log)
                      + f"\n\n--- negative ---\n{PAINTED_NEGATIVE}\n")
         canvas.save(audit / f"attempt-{attempt}.png")
-        final, result, boundaries = finish_room(canvas, guide, plan, image, args.match_strength)
+        final, result, boundaries = finish_room(canvas, guide, plan, image, args.match_strength,
+                                                room.has_alpha)
         seams = ([("column", x) for x in boundaries.columns]
                  + [("row", y) for y in boundaries.rows if y < image.height * SCALE])
         for (axis, at), ratio in zip(seams, result.seam_ratios):
@@ -450,8 +467,8 @@ def corrections_for(args, room, reviews):
 
 def write_nearest(args, room):
     """A skip room's output: its source enlarged 4x, nearest neighbour."""
-    image = source_tree.open_rgba(args.src, room)
-    save_image_atomic(image.convert("RGB").resize(room.out_size, Image.Resampling.NEAREST),
+    save_image_atomic(source_tree.open_rgba(args.src, room).convert(room.mode)
+                      .resize(room.out_size, Image.Resampling.NEAREST),
                       args.dst / room.out_name)
 
 

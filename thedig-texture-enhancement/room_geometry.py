@@ -67,6 +67,45 @@ def pad_rows(image, height):
     return out
 
 
+def fill_transparent(image):
+    """`image` as RGB with every transparent pixel set to the mean of its nearest
+    opaque 4-neighbours, filled outward ring by ring; an opaque image is returned
+    as it is, and an image with no opaque pixel keeps its RGB."""
+    a = np.asarray(image.convert("RGBA"))
+    known = a[..., 3] > 0
+    rgb = a[..., :3].astype(np.int64)
+    if known.all() or not known.any():
+        return Image.fromarray(a[..., :3].copy())
+    h, w = known.shape
+    while not known.all():
+        pk = np.pad(known, 1)
+        pr = np.pad(rgb, ((1, 1), (1, 1), (0, 0)))
+        total = np.zeros_like(rgb)
+        count = np.zeros((h, w), np.int64)
+        for dy, dx in ((0, 1), (2, 1), (1, 0), (1, 2)):
+            near = pk[dy:dy + h, dx:dx + w]
+            total += pr[dy:dy + h, dx:dx + w] * near[..., None]
+            count += near
+        new = ~known & (count > 0)
+        rgb[new] = total[new] // count[new][:, None]
+        known = known | new
+    return Image.fromarray(rgb.astype(np.uint8))
+
+
+def opaque_mask(image, scale=1):
+    """(h * scale, w * scale) bool: where `image` is opaque, scaled by nearest neighbour."""
+    opaque = np.asarray(image.convert("RGBA"))[..., 3] > 0
+    return np.kron(opaque, np.ones((scale, scale), bool)) if scale > 1 else opaque
+
+
+def with_alpha(image, source):
+    """The 4x `image` as RGBA, its alpha `source`'s alpha scaled up by nearest neighbour."""
+    alpha = source.convert("RGBA").getchannel("A").resize(image.size, Image.Resampling.NEAREST)
+    out = image.convert("RGB").convert("RGBA")
+    out.putalpha(alpha)
+    return out
+
+
 @dataclass(frozen=True)
 class Guide:
     native: Image.Image     # de-dithered at native size: what the geometry check compares with
@@ -74,7 +113,7 @@ class Guide:
 
 
 def build_guide(image, method=DEDITHER_METHOD):
-    native = dedither(image.convert("RGB"), method)
+    native = dedither(fill_transparent(image), method)
     padded = pad_rows(native, ALIGN * math.ceil(native.height / ALIGN))
     full = padded.resize((padded.width * SCALE, padded.height * SCALE),
                          Image.Resampling.LANCZOS)

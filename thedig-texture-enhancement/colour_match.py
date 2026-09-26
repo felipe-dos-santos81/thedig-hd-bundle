@@ -47,26 +47,29 @@ def _to_rgb(lab):
     return Image.fromarray(np.round(np.clip(c, 0, 1) * 255).astype(np.uint8))
 
 
-def _stats(lab):
-    pixels = lab.reshape(-1, 3)
+def _stats(lab, mask=None):
+    pixels = lab.reshape(-1, 3) if mask is None else lab[mask]
     return pixels.mean(axis=0), pixels.std(axis=0)
 
 
-def lab_stats(image):
-    """(means, stds): three floats each, over the CIE L*, a*, b* bands."""
-    means, stds = _stats(_to_lab(image))
+def lab_stats(image, mask=None):
+    """(means, stds): three floats each, over the CIE L*, a*, b* bands, over the
+    pixels `mask` (an (h, w) bool array) marks, or all of them."""
+    means, stds = _stats(_to_lab(image), mask)
     return tuple(float(v) for v in means), tuple(float(v) for v in stds)
 
 
-def match(render, guide, strength=1.0):
+def match(render, guide, strength=1.0, mask=None):
     """The render shifted and scaled per Lab band toward `guide`'s mean and
-    spread, blended by `strength`. Returns a new RGB image of the render's size;
-    strength 0 returns the raw pixels unchanged (no Lab round trip)."""
+    spread, blended by `strength`, with both images' statistics taken over the
+    pixels `mask` marks (all when None) and the transfer applied to every pixel.
+    Returns a new RGB image of the render's size; strength 0 returns the raw
+    pixels unchanged (no Lab round trip)."""
     if strength == 0:
         return render.convert("RGB").copy()
     lab = _to_lab(render)
-    means, stds = _stats(lab)
-    target_means, target_stds = lab_stats(guide)
+    means, stds = _stats(lab, mask)
+    target_means, target_stds = lab_stats(guide, mask)
     # A band that is really constant still has a float64 std of about 1e-12
     # (the Lab transform's own rounding), not exactly 0; a bare `> 0` guard
     # let that near-zero std blow the gain up and paint noise onto a flat or

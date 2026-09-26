@@ -287,6 +287,26 @@ class SeamTests(unittest.TestCase):
         self.assertTrue((after[:, 3360:] == before[:, 3360:]).all())
 
 
+class AlphaTests(unittest.TestCase):
+    def test_fill_transparent_takes_the_nearest_opaque_colour(self):
+        a = np.zeros((1, 5, 4), np.uint8)
+        a[0, 0] = (200, 0, 0, 255)
+        a[0, 4] = (0, 0, 200, 255)
+        out = np.asarray(rg.fill_transparent(Image.fromarray(a)))
+        self.assertEqual([tuple(p) for p in out[0]],
+                         [(200, 0, 0), (200, 0, 0), (100, 0, 100), (0, 0, 200), (0, 0, 200)])
+        opaque = testkit.room_image(testkit.room(9, 32, 16))
+        self.assertEqual(rg.fill_transparent(opaque).tobytes(), opaque.convert("RGB").tobytes())
+
+    def test_with_alpha_scales_the_source_alpha_exactly(self):
+        source = testkit.room_image(testkit.room(9, 32, 16, alpha_rows=5))
+        out = rg.with_alpha(noise((128, 64), seed=4), source)
+        alpha = np.asarray(out.getchannel("A"))
+        self.assertEqual(out.mode, "RGBA")
+        self.assertTrue((alpha[:20] == 0).all() and (alpha[20:] == 255).all())
+        self.assertTrue((rg.opaque_mask(source, 4) == (alpha > 0)).all())
+
+
 class FixupTests(unittest.TestCase):
     def test_apply_fixups_blanks_margins_and_copies_the_wrap(self):
         with self.subTest("wrap copy and right margin"):

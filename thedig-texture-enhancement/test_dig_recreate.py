@@ -11,6 +11,7 @@ from PIL import Image
 
 import dig_recreate as a
 import comfy_client
+import room_geometry
 import source_tree
 import testkit
 from prompts import GEOMETRY_CORRECTION, PAINTED_NEGATIVE, SEAM_NOTE
@@ -113,6 +114,23 @@ class VerifyTests(DriverFixture):
             code, _, err = testkit.run_cli(["verify", "--src", str(self.root / "nope")])
             self.assertEqual(code, 2)
             self.assertIn("source is not a directory", err)
+
+    def test_alpha_and_mode_are_verified(self):
+        self.use_rooms((testkit.room(5, 320, 144, alpha_rows=40),))
+        with testkit.comfy_stub(comfy_dir=self.comfy_dir, render=testkit.fake_render()):
+            self.assertEqual(self.run_cli("batch")[0], 0)
+        self.assertEqual(self.run_cli("verify")[0], 0)
+        path = self.dst / "room_005.png"
+        record_path = self.dst / ".quality" / "room_005" / "attempt-1.json"
+        for image, code in ((Image.new("RGBA", (1280, 576)), "WRONGALPHA"),
+                            (Image.new("RGB", (1280, 576)), "WRONGMODE")):
+            with self.subTest(code):
+                image.save(path)
+                record = json.loads(record_path.read_text())
+                record["output_sha256"] = source_tree.file_sha256(path)   # only the pixels are wrong
+                record_path.write_text(json.dumps(record))
+                _, out, _ = self.run_cli("verify")
+                self.assertIn(f"{code:10} room_005", out)
 
 
 class CaptionTests(DriverFixture):
@@ -294,6 +312,21 @@ class RenderRoomTests(DriverFixture):
         record = self.record(5)
         self.assertEqual((record["windows"][3], record["padded_height"]), ([32, 112, 352, 352], 472))
         self.assertEqual(len(record["geometry"]["seam_ratios"]), 3)
+
+    def test_transparent_rooms_keep_their_alpha(self):
+        self.use_rooms((testkit.room(5, 320, 144, alpha_rows=40), testkit.room(6, 320, 144, rgba=True)))
+        self.entries = load_rooms(self.rooms_file)
+        for number, transparent_rows in ((5, 160), (6, 0)):   # room 32's case: RGBA, all opaque
+            with self.subTest(room=number):
+                (_, result), _ = self.render(number)
+                self.assertTrue(result.passed, result.issues)
+                path = self.dst / f"room_{number:03d}.png"
+                with Image.open(path) as im:
+                    self.assertEqual((im.size, im.mode), ((1280, 576), "RGBA"))
+                    alpha = np.asarray(im.getchannel("A"))
+                self.assertTrue((alpha[:transparent_rows] == 0).all())
+                self.assertTrue((alpha[transparent_rows:] == 255).all())
+                self.assertTrue(a.alpha_matches(path, source_tree.open_rgba(self.src, self.room(number))))
 
 
 class BatchTests(DriverFixture):
@@ -619,6 +652,20 @@ class ReviewTests(DriverFixture):
                 code, _, err = self.run_cli("review", "--room", "1")
             self.assertEqual(code, 0)
             self.assertIn("warning: failed to free ComfyUI's models: connection refused", err)
+
+
+@testkit.needs_real_corpus
+class RealCorpusTests(unittest.TestCase):
+    def test_a_perfect_render_of_every_room_passes_the_gate(self):
+        for room in testkit.real_rooms():
+            with self.subTest(room=room.key):
+                image = source_tree.open_rgba(testkit.REAL_SRC, room)
+                guide = room_geometry.build_guide(image)
+                plan = room_geometry.plan_room(image)
+                final, result, _ = a.finish_room(guide.full.copy(), guide, plan, image,
+                                                 a.DEFAULT_MATCH_STRENGTH, room.has_alpha)
+                self.assertEqual((final.size, final.mode), (room.out_size, room.mode))
+                self.assertTrue(result.passed, result.issues)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,29 @@ class MatchTests(unittest.TestCase):
             with self.subTest(band=name):
                 self.assertAlmostEqual(out_stds[band], 0.0, delta=1.0)
 
+    def test_a_mask_limits_the_statistics(self):
+        # The brief's guide was flat (100, 100, 100) everywhere; with a perfectly
+        # flat target the gain collapses to ~0 regardless of masking (moved ==
+        # target_means exactly, whatever the render's own stats are), so masked
+        # and unmasked outputs were identical and the "unmasked differs" half of
+        # this test could never fail. Giving the guide's masked-out region its
+        # own distinct colour keeps the masked case's assertion (matches (100, 100,
+        # 100) exactly) while making the unmasked case's mixed-in statistics
+        # actually skew the correction, per the masked-statistics rule this test
+        # is meant to check.
+        arr = np.full((8, 16, 3), 50, np.uint8)
+        arr[:, 8:] = 250                                  # outside the mask
+        render = Image.fromarray(arr)
+        guide_arr = np.full((8, 16, 3), 100, np.uint8)
+        guide_arr[:, 8:] = (10, 200, 10)                  # outside the mask: a different scene
+        guide = Image.fromarray(guide_arr)
+        mask = np.zeros((8, 16), bool)
+        mask[:, :8] = True
+        inside = np.asarray(cm.match(render, guide, 1.0, mask=mask))[:, :8]
+        self.assertTrue((np.abs(inside.astype(int) - 100) <= 1).all())
+        unmasked = np.asarray(cm.match(render, guide, 1.0))[:, :8]
+        self.assertTrue((np.abs(unmasked.astype(int) - 100) > 1).any())
+
 
 if __name__ == "__main__":
     unittest.main()

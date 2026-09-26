@@ -2,8 +2,8 @@
 
 The re-import-safe gate: a render whose content slid, or that lost the
 source's edges, is not promoted. Numpy maths on Pillow images; knows no files,
-rooms or audit tree. Windows are native (x0, x1) column pairs; seam boundaries
-are 4x columns.
+rooms or audit tree. Windows are native (x0, y0, x1, y1) boxes; seam boundaries
+are 4x stitch columns and rows.
 
 Each measure has one job. Phase correlation finds a slid room or window (a
 2-pixel shift reads as 2.0). Edge agreement finds lost or moved structure,
@@ -143,7 +143,8 @@ def seam_ratio(image, x, band=SEAM_BAND):
     return round(min(step / base, SEAM_CAP), 3)
 
 
-def check(render, source, windows=(), boundaries=(), reference=None, rows=()):
+def check(render, source, windows=(), boundaries=(), reference=None, rows=(), opaque=None,
+          min_edges=1):
     """Compare the 4x `render` with its de-dithered native `source` (both RGB).
 
     `windows` are native (x0, y0, x1, y1) boxes, clipped to the source.
@@ -151,6 +152,10 @@ def check(render, source, windows=(), boundaries=(), reference=None, rows=()):
     the render's step at a boundary over its local steps; with a 4x `reference`
     (the guide) it is divided by the reference's own ratio there, so a boundary
     that falls on a real edge of the source is not called a seam.
+
+    `opaque` (native bool) keeps transparent pixels out of edge agreement.
+    `min_edges` is the least strong-edge count for the whole image to be judged
+    (an object's context window passes MIN_WINDOW_EDGES).
     """
     small = luminance(render.resize(source.size, Image.Resampling.BOX))
     base = luminance(source)
@@ -167,7 +172,9 @@ def check(render, source, windows=(), boundaries=(), reference=None, rows=()):
         if max(abs(ws[0]), abs(ws[1])) >= MAX_SHIFT:
             issues.append(f"geometry: window {k} is shifted {ws[0]:+.1f},{ws[1]:+.1f} px")
     strong, kept = edge_maps(base, small)
-    agreement = round(_fraction(strong, kept), 4)
+    if opaque is not None:
+        strong, kept = strong & opaque, kept & opaque
+    agreement = round(_fraction(strong, kept, min_edges), 4)
     if agreement < MIN_EDGE_AGREEMENT:
         issues.append(f"geometry: edge agreement {agreement:.2f}, needs "
                       f"{MIN_EDGE_AGREEMENT:.2f}")
