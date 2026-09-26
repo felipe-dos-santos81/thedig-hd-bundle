@@ -27,6 +27,7 @@ import re
 import shutil
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
@@ -36,10 +37,10 @@ import comfy_client
 import geometry_check
 import room_geometry
 import source_tree
-from prompts import (GEOMETRY_CORRECTION, PAINTED_NEGATIVE, SEAM_NOTE, caption_room,
+from prompts import (GEOMETRY_CORRECTION, SEAM_NOTE, caption_room, medium_style, negative_prompt,
                      render_prompt, review_room, vlm_is_serving, window_note)
-from rooms_file import (Review, RoomEntry, RoomsFileError, check_coverage, load_reviews,
-                        load_rooms, save_reviews, save_rooms)
+from rooms_file import (Review, RoomsFileError, check_coverage, load_reviews, load_rooms,
+                        save_reviews, save_rooms)
 from source_tree import SourceError
 
 REPO = Path(__file__).resolve().parent
@@ -228,7 +229,7 @@ def cmd_caption(args):
             failed += 1
             print(f"  ERROR captioning {room.key}: {error}", file=sys.stderr, flush=True)
             continue
-        entries[room.key] = RoomEntry(entry.kind, caption)
+        entries[room.key] = replace(entry, caption=caption, style=entry.style or medium_style(caption))
         save_rooms(args.rooms_file, entries)
         done += 1
     print(f"done: captioned={done} skipped={skipped} failed={failed} -> {args.rooms_file}")
@@ -279,6 +280,8 @@ def render_room(args, workflow, room, entry, corrections):
     seed = SEED + attempt - 1
     started = time.monotonic()
     stage = None               # the window being rendered
+    style = entry.style or "painted"
+    negative = negative_prompt(style)
     try:
         image = source_tree.open_rgba(args.src, room)
         guide = room_geometry.build_guide(image)
@@ -290,7 +293,7 @@ def render_room(args, workflow, room, entry, corrections):
             nonlocal stage
             stage = label
             positive = render_prompt(entry.caption, entry.kind, corrections, note,
-                                     workflow.reference)
+                                     workflow.reference, style=style)
             prompt_log.append(f"--- {label} ---\n{positive}")
             paths = {}
             for part, image in (("guide", guide_image), ("composite", composite), ("mask", mask)):
@@ -298,7 +301,7 @@ def render_room(args, workflow, room, entry, corrections):
                 image.save(paths[part])
             saved = comfy_client.render_window(
                 workflow, guide=paths["guide"], composite=paths["composite"], mask=paths["mask"],
-                reference=REFERENCE, positive=positive, negative=PAINTED_NEGATIVE, seed=seed,
+                reference=REFERENCE, positive=positive, negative=negative, seed=seed,
                 # The attempt in the name keeps ComfyUI's cache from answering a rerun of
                 # the same inputs and seed with an old render.
                 name=f"{room.key}_a{attempt}-{label}", url=COMFY_URL, comfy_dir=COMFY_DIR)
@@ -327,7 +330,7 @@ def render_room(args, workflow, room, entry, corrections):
         stage = None
         write_atomic(audit / f"attempt-{attempt}.prompt.txt",
                      f"workflow: {workflow.name}\n\n" + "\n\n".join(prompt_log)
-                     + f"\n\n--- negative ---\n{PAINTED_NEGATIVE}\n")
+                     + f"\n\n--- negative ---\n{negative}\n")
         canvas.save(audit / f"attempt-{attempt}.png")
         final, result, boundaries = finish_room(canvas, guide, plan, image, args.match_strength,
                                                 room.has_alpha)
@@ -669,7 +672,8 @@ def cmd_review(args):
         try:
             pairs, overview = review_images(args.src, room, dst)
             verdict = review_room(pairs, overview, entry.kind, entry.caption,
-                                  comfy_client.http_json, VLM_BASE_URL, VLM_MODEL, VLM_API_KEY)
+                                  comfy_client.http_json, VLM_BASE_URL, VLM_MODEL, VLM_API_KEY,
+                                  style=entry.style or "painted")
         except Exception as error:
             failed += 1
             write_atomic(audit / f"attempt-{attempt}.review-error.txt", str(error))

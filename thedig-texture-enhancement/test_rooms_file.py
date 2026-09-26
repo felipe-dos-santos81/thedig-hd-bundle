@@ -59,6 +59,35 @@ class RoomsTests(unittest.TestCase):
                                                     "rooms not in the manifest: room_009"):
             rf.check_coverage(rooms, ["room_001", "room_002"])
 
+    def test_style_and_skip_objects(self):
+        path = self.path
+        entries = {"room_001": RoomEntry("scene", "SCENE: x", "rendered", ("obj010_02",)),
+                   "room_002": RoomEntry("insert")}
+        rf.save_rooms(path, entries)
+        self.assertEqual(rf.load_rooms(path), entries)
+        text = path.read_text()
+        self.assertIn("style: rendered", text)
+        self.assertEqual(text.count("style"), 1, msg="a blank style is not written")
+        self.assertEqual(text.count("skip_objects"), 1, msg="an empty list is not written")
+        cases = {
+            "bad style": ("room_001:\n  kind: scene\n  style: oil\n", '"style" must be'),
+            "not a list": ("room_001:\n  kind: scene\n  skip_objects: obj010_02\n",
+                           '"skip_objects" must be a list'),
+            "bad key": ("room_001:\n  kind: scene\n  skip_objects: [door]\n",
+                        "'door' is not an object key"),
+        }
+        for name, (text, message) in cases.items():
+            with self.subTest(name):
+                path.write_text(text)
+                with self.assertRaisesRegex(RoomsFileError, message):
+                    rf.load_rooms(path)
+
+    def test_the_shipped_rooms_file_loads(self):
+        rooms = rf.load_rooms(Path(__file__).resolve().parent / "rooms.yaml")
+        self.assertEqual(len(rooms), 111)
+        self.assertEqual(sorted(k for k, e in rooms.items() if e.kind == "skip"),
+                         ["room_001", "room_086", "room_088", "room_093", "room_103", "room_104"])
+
 
 class ReviewsTests(unittest.TestCase):
     def setUp(self):

@@ -1,5 +1,5 @@
-"""Prompts and VLM requests: the caption question, the painted render prompt,
-the review question and its parser.
+"""Prompts and VLM requests: the caption question, the painted/rendered render
+prompt, the review question and its parser.
 
 Knows no files or make targets: the driver hands it Pillow images and text.
 The VLM plumbing (_image, _ask, parse_review,
@@ -16,27 +16,35 @@ CAPTION_TIMEOUT = 900   # a caption is up to 1600 tokens; about 4 tok/s on this 
 REVIEW_TIMEOUT = 600    # a review is up to 1200 tokens
 VLM_MAX_SIDE = 1280     # every image is scaled so its longer side is this
 
-CAPTION_QUESTION = '''Image 1 is a background from The Dig (LucasArts, 1995), a hand-painted 256-colour point-and-click adventure game. Any further images are consecutive windows of the same room from left to right. Describe it for an artist who will repaint it in high definition with exactly the same composition. Report only what the images show; this is observation, not creative writing.
+CAPTION_QUESTION = '''Image 1 is a background from The Dig (LucasArts, 1995), a 256-colour point-and-click adventure game whose backgrounds are hand-painted or pre-rendered 3D. Any further images are windows of the same room, row by row from the top left. Describe it for an artist who will recreate it in high definition with exactly the same composition. Report only what the images show; this is observation, not creative writing.
 Use these short labelled sections:
-SCENE: the kind of place (interior, exterior, close-up insert, map), its architecture and atmosphere.
+SCENE: the kind of place (interior, exterior, close-up insert, map, device screen), its architecture and atmosphere.
+MEDIUM: painted, pre-rendered 3D, or mixed, with one sentence of visible evidence (brushwork, airbrushed gradients, hard CGI shading, specular highlights, ray-traced reflections).
 VIEW: viewpoint, framing and perspective.
-LAYOUT: the major objects and surfaces from left to right, each with its horizontal position as a fraction of the room's width (0 is the left edge, 1 the right edge) and its vertical position (0 top, 1 bottom), relative size and occlusion. Cover foreground, middle and background.
-OBJECTS: doors, windows, openings, furniture and props, with their open or closed states; say absent if there are none.
+LAYOUT: the major objects and surfaces, each with its horizontal position as a fraction of the room's width (0 is the left edge, 1 the right edge) and its vertical position as a fraction of its height (0 top, 1 bottom), relative size and occlusion. Cover foreground, middle and background.
+OBJECTS: doors, openings, machines, crystals, plates, furniture and props, with their open or closed states; say absent if there are none.
 LIGHTING: light sources, their direction, the exposure and the shadows. Dark areas stay dark.
 PALETTE: the dominant colours of each major area.
-TEXT: every piece of lettering that is legible, transcribed verbatim with its position; write none if there is none. Do not guess at illegible text.
-INVARIANTS: the composition and object relationships that must survive repainting. Mark ambiguity instead of inventing detail.
+TEXT: every piece of lettering or glyph writing that is legible, transcribed verbatim with its position; write none if there is none. Do not guess at illegible text.
+INVARIANTS: the composition and object relationships that must survive recreation. Mark ambiguity instead of inventing detail.
 The game draws its characters separately, so say "no people" unless people are painted into the background itself. Do not prescribe a style, lens or colour grade. Keep under 600 words.'''
 
-SECTION_LABELS = ("SCENE", "VIEW", "LAYOUT", "OBJECTS", "LIGHTING", "PALETTE", "TEXT",
-                  "INVARIANTS")
+SECTION_LABELS = ("SCENE", "MEDIUM", "VIEW", "LAYOUT", "OBJECTS", "LIGHTING", "PALETTE",
+                  "TEXT", "INVARIANTS")
 
 DEFAULT_REFERENCE = "the provided reference image"   # how the 2511 prompt names the window
 
-PAINTED_RULES = '''Repaint {reference} as a high-definition hand-painted background for a classic point-and-click adventure game, in the manner of the painted backgrounds of early-1990s LucasArts adventures: confident painterly brushwork, rich but faithful colour, soft painted light and shadow, crisp readable shapes.
+STYLES = ("painted", "rendered")
+
+PAINTED_RULES = '''Repaint {reference} as a high-definition hand-painted background for a classic point-and-click adventure game, in the manner of the painted backgrounds of mid-1990s LucasArts adventures such as The Dig: confident painterly brushwork, rich but faithful colour, soft painted light and shadow, crisp readable shapes.
 Keep the exact composition. Every object, edge, opening and horizon stays where the reference puts it, at the same size and in the same perspective; nothing is moved, added, removed or resized. Add no people, creatures or characters that the reference does not show.
 Keep the reference's colours, time of day, light sources and shadow pattern. Dark areas stay dark and flat black areas stay flat black.
-Replace the dithering and blocky pixels with painted texture and fine detail that suit each material: wood grain, stone, cloth, foliage, metal, water, sky. No photograph, no 3D render, no pixel art, no border or frame.'''
+Replace the dithering and blocky pixels with painted texture and fine detail that suit each material: rock, sand, crystal, alien metal, water, sky. No photograph, no 3D render, no pixel art, no border or frame.'''
+
+RENDERED_RULES = '''Recreate {reference} as a high-definition pre-rendered 3D background for a classic point-and-click adventure game, in the manner of the pre-rendered scenes of mid-1990s LucasArts adventures such as The Dig: clean modelled surfaces, crisp geometry, smooth gradients, specular highlights and soft ray-traced light, at a much higher resolution than the reference.
+Keep the exact composition. Every object, edge, opening and horizon stays where the reference puts it, at the same size and in the same perspective; nothing is moved, added, removed or resized. Add no people, creatures or characters that the reference does not show.
+Keep the reference's colours, time of day, light sources and shadow pattern. Dark areas stay dark and flat black areas stay flat black.
+Replace the blocky pixels and colour banding with clean, detailed surfaces that suit each material: hull plating, glass, rock, dust, starfield, metal. No photograph, no painting, no pixel art, no border or frame.'''
 
 INSERT_RULES = '''This is a full-screen close-up insert, not a room. Keep any lettering exactly as the reference shows it, in the same place and style; illegible small print stays illegible texture.'''
 
@@ -55,36 +63,64 @@ GEOMETRY_CORRECTION = ("Keep every edge, object, horizon and outline exactly whe
 PAINTED_NEGATIVE = ("photograph, photorealistic, 3D render, CGI, pixel art, dithering, jpeg "
                     "artifacts, blurry, noisy, people, characters, figures, extra objects, "
                     "changed text, extra text, watermark, signature, frame, border")
+RENDERED_NEGATIVE = ("photograph, photorealistic, painting, brush strokes, pixel art, dithering, "
+                     "jpeg artifacts, blurry, noisy, people, characters, figures, extra objects, "
+                     "changed text, extra text, watermark, signature, frame, border")
 
-REVIEW_QUESTION = '''The images come in pairs. In each pair the first image is one window of the authoritative original background of a 1992 hand-painted adventure game (smoothed and enlarged), and the second is the same window of a high-definition repaint. The last image is the whole repaint, downscaled. Judge fidelity first, then style. Painted texture and fine detail replacing the original's pixels is the goal and is never a reason to reject.
+STYLE_RULES = {
+    "painted": "the recreation looks like a photograph or a 3D render, or keeps the original's "
+               "flat, dithered pixels instead of painted detail",
+    "rendered": "the recreation looks like a photograph or a painting instead of clean "
+                "pre-rendered 3D, or keeps the original's blocky pixels and banding",
+}
+
+REVIEW_QUESTION = '''The images come in pairs. In each pair the first image is one window of the authoritative original background of a 1995 adventure game (smoothed and enlarged), and the second is the same window of a high-definition recreation. The last image is the whole recreation, downscaled. Judge fidelity first, then style. New fine detail replacing the original's pixels is the goal and is never a reason to reject.
 Reject when:
 1. layout: an object, edge, opening or horizon is added, dropped, moved or resized, the perspective or framing changed, or a person, creature or character appears that the original lacks;
-2. style: the repaint looks like a photograph or a 3D render, or keeps the original's flat, dithered pixels instead of painted detail;
+2. style: {style_rule};
 3. lettering (close-up inserts only): legible lettering differs from the expected lettering below, or became illegible;
-4. seams: a visible vertical seam, a doubled object or repeated detail where windows meet, or a jump in colour or texture between neighbouring windows in the whole repaint.
+4. seams: a visible vertical or horizontal seam, a doubled object or repeated detail where windows meet, or a jump in colour or texture between neighbouring windows in the whole recreation.
 Return ONLY JSON: {"accepted": true or false, "issues": ["one specific problem: its window number, its screen position and a concrete correction"]}. Accept only if there are no significant problems; use an empty issues list when accepted. At most six issues.'''
 
 _NONE = ("none", "no text", "absent", "no legible text")
 
 
-def text_section(caption):
-    """The caption's TEXT section, or None when it is absent or says there is none.
+def section(caption, label):
+    """The caption's `label` section, stripped, or None when it is absent or empty.
 
-    Labels may be bold or italic (the VLM sometimes writes **TEXT:**); the
-    section runs to the next label or the end.
+    Labels may be bold or italic (the VLM sometimes writes **TEXT:**); a section
+    runs to the next label or the end.
     """
     labels = "|".join(SECTION_LABELS)
     pattern = re.compile(rf"^[ \t]*[*_#]*[ \t]*({labels})[ \t]*[*_]*[ \t]*:[*_]*", re.M)
     matches = list(pattern.finditer(caption))
     for i, match in enumerate(matches):
-        if match.group(1) != "TEXT":
+        if match.group(1) != label:
             continue
         end = matches[i + 1].start() if i + 1 < len(matches) else len(caption)
-        text = caption[match.end():end].strip()
-        if not text or text.lower().rstrip(".") in _NONE:
-            return None
-        return text
+        return caption[match.end():end].strip() or None
     return None
+
+
+def text_section(caption):
+    """The caption's TEXT section, or None when it is absent or says there is none."""
+    text = section(caption, "TEXT")
+    if text is None or text.lower().rstrip(".") in _NONE:
+        return None
+    return text
+
+
+_RENDERED = re.compile(r"pre-?rendered|\b3d\b|\bcgi\b|computer[- ]generated", re.I)
+
+
+def medium_style(caption):
+    """The style the caption's MEDIUM implies: "rendered" when it mentions
+    pre-rendered, 3D, CGI or computer-generated art, else "painted"."""
+    return "rendered" if _RENDERED.search(section(caption, "MEDIUM") or "") else "painted"
+
+
+def negative_prompt(style):
+    return RENDERED_NEGATIVE if style == "rendered" else PAINTED_NEGATIVE
 
 
 def window_note(box, area):
@@ -104,10 +140,12 @@ def window_note(box, area):
             "elsewhere in the room must not appear in it.")
 
 
-def render_prompt(caption, kind, corrections=(), note="", reference=DEFAULT_REFERENCE):
-    """Positive prompt: the painted rules naming the reference as `reference`, the
-    insert rules for an insert, the window note, the caption, then corrections."""
-    parts = [PAINTED_RULES.format(reference=reference)]
+def render_prompt(caption, kind, corrections=(), note="", reference=DEFAULT_REFERENCE,
+                  style="painted"):
+    """Positive prompt: the painted or rendered rules naming the reference as
+    `reference`, the insert rules for an insert, the window note, the caption,
+    then corrections."""
+    parts = [(RENDERED_RULES if style == "rendered" else PAINTED_RULES).format(reference=reference)]
     if kind == "insert":
         text = text_section(caption)
         parts.append(INSERT_LETTERING.format(text=text) if text else INSERT_RULES)
@@ -201,12 +239,13 @@ def parse_review(text):
     return {"accepted": value["accepted"], "issues": issues}
 
 
-def review_room(pairs, overview, kind, caption, http, base_url, model, key):
+def review_room(pairs, overview, kind, caption, http, base_url, model, key, style="painted"):
     """The VLM's verdict on a room: (source guide, render) per window, then the
     whole render; an insert's expected lettering comes from its caption."""
     lettering = text_section(caption) if kind == "insert" else None
-    question = (REVIEW_QUESTION + f"\nThis room has {len(pairs)} window(s). Kind: {kind}. "
-                f"Expected lettering: {lettering or 'none'}.")
+    question = (REVIEW_QUESTION.replace("{style_rule}", STYLE_RULES.get(style, STYLE_RULES["painted"]))
+               + f"\nThis room has {len(pairs)} window(s). Kind: {kind}. Style: {style or 'painted'}. "
+               f"Expected lettering: {lettering or 'none'}.")
     images = [image for pair in pairs for image in pair] + [overview]
     return parse_review(_ask(question, images, http, base_url, model, key, json_mode=True,
                              max_tokens=1200, timeout=REVIEW_TIMEOUT))

@@ -1,9 +1,12 @@
 """Read and write rooms.yaml and reviews.yaml.
 
 rooms.yaml is hand-owned: one entry per manifest room, keyed room_NNN, with a
-`kind` (scene, insert or skip) and a `caption` that `make caption` fills and
-the user edits. reviews.yaml is machine-written: one verdict per room on its
-latest judged attempt, from the VLM review (`source: review`) or from batch's
+`kind` (scene, insert or skip), a `caption` that `make caption` fills and the
+user edits, a `style` (painted or rendered) that `make caption` fills from the
+caption's MEDIUM section and the user may override, and `skip_objects`, the
+object keys (objNNN_SS) written as a nearest-neighbour 4x rather than
+rendered. reviews.yaml is machine-written: one verdict per room on its latest
+judged attempt, from the VLM review (`source: review`) or from batch's
 geometry gate (`source: geometry`).
 
 Multi-line strings are written in folded (`>`) style. PyYAML writes a blank
@@ -19,8 +22,10 @@ from pathlib import Path
 import yaml
 
 KINDS = ("scene", "insert", "skip")
+STYLES = ("painted", "rendered")
 REVIEW_SOURCES = ("review", "geometry")
 _KEY = re.compile(r"^room_\d{3}$")
+_OBJECT_KEY = re.compile(r"^obj\d{3,}_[0-9A-F]{2}$")
 
 
 class RoomsFileError(ValueError):
@@ -31,6 +36,8 @@ class RoomsFileError(ValueError):
 class RoomEntry:
     kind: str
     caption: str = ""
+    style: str = ""             # painted | rendered; "" until caption fills it (renders as painted)
+    skip_objects: tuple = ()    # object keys written as a nearest-neighbour 4x
 
 
 @dataclass(frozen=True)
@@ -99,7 +106,7 @@ def load_rooms(path):
         where = f"{Path(path)}: {key}"
         if not isinstance(entry, dict):
             raise RoomsFileError(f"{where}: expected a mapping")
-        unknown = sorted(set(entry) - {"kind", "caption"})
+        unknown = sorted(set(entry) - {"kind", "caption", "style", "skip_objects"})
         if unknown:
             raise RoomsFileError(f"{where}: unknown field(s) {', '.join(unknown)}")
         kind = entry.get("kind")
@@ -111,13 +118,30 @@ def load_rooms(path):
             caption = ""
         if not isinstance(caption, str):
             raise RoomsFileError(f'{where}: "caption" must be a string')
-        result[key] = RoomEntry(kind, caption)
+        style = entry.get("style") or ""
+        if style and style not in STYLES:
+            raise RoomsFileError(f'{where}: "style" must be one of {", ".join(STYLES)}, '
+                                 f"got {style!r}")
+        skip = entry.get("skip_objects") or []
+        if not isinstance(skip, list):
+            raise RoomsFileError(f'{where}: "skip_objects" must be a list of object keys')
+        for key_ in skip:
+            if not isinstance(key_, str) or not _OBJECT_KEY.match(key_):
+                raise RoomsFileError(f"{where}: {key_!r} is not an object key (objNNN_SS)")
+        result[key] = RoomEntry(kind, caption, style, tuple(skip))
     return result
 
 
 def save_rooms(path, rooms):
-    _dump({key: {"kind": rooms[key].kind, "caption": normalize_text(rooms[key].caption)}
-           for key in sorted(rooms)}, path)
+    def entry(e):
+        out = {"kind": e.kind}
+        if e.style:
+            out["style"] = e.style
+        out["caption"] = normalize_text(e.caption)
+        if e.skip_objects:
+            out["skip_objects"] = list(e.skip_objects)
+        return out
+    _dump({key: entry(rooms[key]) for key in sorted(rooms)}, path)
 
 
 def check_coverage(rooms, keys, path="rooms.yaml"):

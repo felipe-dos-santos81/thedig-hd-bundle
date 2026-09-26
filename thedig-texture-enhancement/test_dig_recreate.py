@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -14,8 +15,8 @@ import comfy_client
 import room_geometry
 import source_tree
 import testkit
-from prompts import GEOMETRY_CORRECTION, PAINTED_NEGATIVE, SEAM_NOTE
-from rooms_file import Review, RoomEntry, load_reviews, load_rooms, save_reviews
+from prompts import GEOMETRY_CORRECTION, PAINTED_NEGATIVE, RENDERED_NEGATIVE, SEAM_NOTE
+from rooms_file import Review, RoomEntry, load_reviews, load_rooms, save_reviews, save_rooms
 
 
 class DriverFixture(unittest.TestCase):
@@ -167,7 +168,7 @@ class CaptionTests(DriverFixture):
             with testkit.vlm_stub(caption=lambda images, *a: "SCENE: a page"):
                 self.run_cli("caption", "--room", "2")
             self.assertEqual(load_rooms(self.rooms_file)["room_002"],
-                             RoomEntry("insert", "SCENE: a page"))
+                             RoomEntry("insert", "SCENE: a page", "painted"))
 
     def test_refuses_without_vllm(self):
         with testkit.vlm_stub(serving=False, caption=lambda *a: "x") as vlm:
@@ -187,6 +188,19 @@ class CaptionTests(DriverFixture):
         self.assertIn("ERROR captioning room_002", err)
         rooms = load_rooms(self.rooms_file)
         self.assertEqual((rooms["room_001"].caption, rooms["room_002"].caption), ("SCENE: ok", ""))
+
+    def test_caption_fills_a_blank_style_from_medium(self):
+        caption = "SCENE: a test room.\nMEDIUM: pre-rendered 3D\nTEXT: none"
+        with testkit.vlm_stub(caption=lambda *a_, **k: caption):
+            code, _, err = self.run_cli("caption", "--room", "1", "--force")
+        self.assertEqual(code, 0, err)
+        entries = load_rooms(self.rooms_file)
+        self.assertEqual(entries["room_001"].style, "rendered")
+        save_rooms(self.rooms_file, {**entries, "room_001": replace(entries["room_001"],
+                                                                    style="painted")})
+        with testkit.vlm_stub(caption=lambda *a_, **k: caption):
+            self.run_cli("caption", "--room", "1", "--force")
+        self.assertEqual(load_rooms(self.rooms_file)["room_001"].style, "painted")
 
 
 class RenderRoomTests(DriverFixture):
@@ -312,6 +326,14 @@ class RenderRoomTests(DriverFixture):
         record = self.record(5)
         self.assertEqual((record["windows"][3], record["padded_height"]), ([32, 112, 352, 352], 472))
         self.assertEqual(len(record["geometry"]["seam_ratios"]), 3)
+
+    def test_a_rendered_room_gets_the_rendered_rules(self):
+        entries = load_rooms(self.rooms_file)
+        self.entries = {**entries, "room_001": replace(entries["room_001"], style="rendered")}
+        _, stub = self.render(1)
+        kw = stub.render.call_args.kwargs
+        self.assertEqual(kw["negative"], RENDERED_NEGATIVE)
+        self.assertTrue(kw["positive"].startswith("Recreate "))
 
     def test_transparent_rooms_keep_their_alpha(self):
         self.use_rooms((testkit.room(5, 320, 144, alpha_rows=40), testkit.room(6, 320, 144, rgba=True)))
@@ -579,7 +601,7 @@ class ReviewTests(DriverFixture):
             self.run_cli("batch")
 
     def review(self, *extra, verdict=None, **stub):
-        verdict = verdict or (lambda pairs, overview, kind, caption, *a:
+        verdict = verdict or (lambda pairs, overview, kind, caption, *a, **kw:
                               {"accepted": True, "issues": []})
         with testkit.vlm_stub(review=verdict, free=None, **stub) as vlm:
             code, out, err = self.run_cli("review", *extra)
@@ -605,7 +627,7 @@ class ReviewTests(DriverFixture):
             self.assertEqual(vlm.review.call_count, 1)
 
     def test_a_rejection_sends_the_room_back_to_batch(self):
-        def verdict(pairs, *a):
+        def verdict(pairs, *a, **kw):
             if len(pairs) == 2:
                 return {"accepted": False, "issues": ["window 2: the awning moved; move it back"]}
             return {"accepted": True, "issues": []}
@@ -640,14 +662,14 @@ class ReviewTests(DriverFixture):
 
     def test_review_failures_are_recorded_but_do_not_stop_it(self):
         with self.subTest("a failed review is recorded"):
-            def boom(*a):
+            def boom(*a, **kw):
                 raise ValueError("VLM review verdict contradicts its issues")
             code, _, _, _ = self.review("--room", "1", verdict=boom)
             self.assertEqual(code, 1)
             self.assertIn("contradicts",
                           (self.dst / ".quality/room_001/attempt-1.review-error.txt").read_text())
         with self.subTest("a down comfyui does not stop the review"):
-            with testkit.vlm_stub(review=lambda *a: {"accepted": True, "issues": []},
+            with testkit.vlm_stub(review=lambda *a, **kw: {"accepted": True, "issues": []},
                                   free=RuntimeError("connection refused")):
                 code, _, err = self.run_cli("review", "--room", "1")
             self.assertEqual(code, 0)

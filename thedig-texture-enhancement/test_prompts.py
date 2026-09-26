@@ -62,6 +62,23 @@ class RenderPromptTests(unittest.TestCase):
         self.assertIn(p.INSERT_RULES, text)
         self.assertNotIn("LETTERING:", text)
 
+    def test_medium_picks_the_style_and_the_rules(self):
+        cases = {
+            "SCENE: a shuttle\nMEDIUM: pre-rendered 3D, hard CGI shading\nVIEW: side": "rendered",
+            "SCENE: a cave\n**MEDIUM:** mixed: painted rock, a 3D model of the tram": "rendered",
+            "SCENE: a cave\nMEDIUM: painted, soft airbrushed gradients": "painted",
+            "SCENE: a cave\nVIEW: wide": "painted",
+        }
+        for caption, style in cases.items():
+            with self.subTest(caption=caption):
+                self.assertEqual(p.medium_style(caption), style)
+        rendered = p.render_prompt("SCENE: x", "scene", style="rendered")
+        self.assertTrue(rendered.startswith(p.RENDERED_RULES.format(reference=p.DEFAULT_REFERENCE)))
+        self.assertIn("The Dig", p.render_prompt("SCENE: x", "scene"))
+        self.assertNotIn("CGI", p.negative_prompt("rendered"))
+        self.assertIn("CGI", p.negative_prompt("painted"))
+        self.assertIn("MEDIUM:", p.CAPTION_QUESTION)
+
     def test_window_note_and_corrections(self):
         note = p.window_note((248, 0, 568, 144), (0, 0, 568, 144))
         self.assertIn("from 44% to 100% of the room's width", note)
@@ -106,8 +123,8 @@ class RequestTests(unittest.TestCase):
                                    "issues": ["window 2: the awning moved; move it back"]})
         payload = vlm.calls[0][1]
         content = payload["messages"][1]["content"]
-        self.assertIn("This room has 2 window(s). Kind: insert. Expected lettering: "
-                      "German Wizard Splits Atom (headline, top).", content[0]["text"])
+        self.assertIn("This room has 2 window(s). Kind: insert. Style: painted. Expected "
+                      "lettering: German Wizard Splits Atom (headline, top).", content[0]["text"])
         self.assertEqual(len(content), 1 + 5)
         self.assertEqual(payload["response_format"], {"type": "json_object"})
 
