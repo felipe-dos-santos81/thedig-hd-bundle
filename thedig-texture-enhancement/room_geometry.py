@@ -17,7 +17,7 @@ WINDOW_WIDTH = 320          # the widest window, native columns
 WINDOW_HEIGHT = 240         # the tallest window, native rows (the spike checks it)
 WINDOW_OVERLAP = 64         # the least overlap between neighbouring windows, on each axis
 ALIGN = 8                   # window edges and the padded canvas height, native px
-DEDITHER_METHODS = ("palette-smooth", "gaussian")
+DEDITHER_METHODS = ("palette-smooth", "gaussian", "none")
 DEDITHER_METHOD = "palette-smooth"
 DEDITHER_THRESHOLD = 64.0   # palette-smooth: the RGB distance of a neighbour still averaged in
 MIN_WRAP_PERIOD = 320       # a wraparound repeats at least one screen later ...
@@ -36,6 +36,8 @@ def dedither(rgb, method=DEDITHER_METHOD):
     gaussian: a Gaussian blur of radius 1. (A 3x3 median is no candidate: on a
     50% checkerboard each pixel is its neighbourhood's majority.)
     """
+    if method == "none":
+        return rgb.convert("RGB")
     if method == "gaussian":
         return rgb.convert("RGB").filter(ImageFilter.GaussianBlur(1))
     if method != "palette-smooth":

@@ -43,6 +43,10 @@ class GuideTests(unittest.TestCase):
                 out = np.asarray(rg.dedither(board, method), dtype=float)
                 self.assertLess(out.std(), factor * board_std)
 
+    def test_dedither_none_is_the_identity(self):
+        board = checkerboard((100, 100, 100), (130, 130, 130))
+        self.assertEqual(rg.dedither(board, "none").tobytes(), board.tobytes())
+
     def test_palette_smooth_keeps_edges_between_far_colours(self):
         arr = np.zeros((8, 16, 3), np.uint8)
         arr[:, :8], arr[:, 8:] = 20, 220

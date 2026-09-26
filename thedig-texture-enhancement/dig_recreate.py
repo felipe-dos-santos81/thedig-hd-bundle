@@ -284,7 +284,7 @@ def render_room(args, workflow, room, entry, corrections):
     negative = negative_prompt(style)
     try:
         image = source_tree.open_rgba(args.src, room)
-        guide = room_geometry.build_guide(image)
+        guide = room_geometry.build_guide(image, args.dedither)
         plan = room_geometry.plan_room(image)
         canvas = guide.full.copy()
         prompt_log = []
@@ -348,7 +348,7 @@ def render_room(args, workflow, room, entry, corrections):
         m = plan.margins
         record = {
             "attempt": attempt, "workflow": workflow.name, "seed": seed, "reference": REFERENCE,
-            "dedither": room_geometry.DEDITHER_METHOD,
+            "dedither": args.dedither,
             "window_width": room_geometry.WINDOW_WIDTH,
             "window_height": room_geometry.WINDOW_HEIGHT,
             "window_overlap": room_geometry.WINDOW_OVERLAP,
@@ -726,6 +726,27 @@ def default_match_strength(environ=os.environ):
         raise UsageError(f"DIG_MATCH_STRENGTH: {error}") from error
 
 
+def render_options(p):
+    """The options of the two render stages, batch and objects."""
+    p.add_argument("--dry-run", action="store_true",
+                   help="print the plan without contacting ComfyUI or writing files")
+    p.add_argument("--no-memory-check", action="store_true",
+                   help=f"skip the {MEMORY_FLOOR_GB} GB available-memory guard")
+    p.add_argument("--force", action="store_true",
+                   help="render the selection again, even when done or stuck")
+    p.add_argument("--match-strength", type=match_strength, default=default_match_strength(),
+                   metavar="X",
+                   help="how far each render moves toward its source's colours, 0 to 1 "
+                        "(default: %(default)s, or DIG_MATCH_STRENGTH)")
+    p.add_argument("--workflow", choices=sorted(comfy_client.WORKFLOWS),
+                   default=default_workflow(), metavar="NAME",
+                   help="render workflow: " + ", ".join(sorted(comfy_client.WORKFLOWS))
+                        + " (default: %(default)s, or DIG_WORKFLOW)")
+    p.add_argument("--dedither", choices=room_geometry.DEDITHER_METHODS,
+                   default=room_geometry.DEDITHER_METHOD,
+                   help="how the guide smooths the source's dithering (default: %(default)s)")
+
+
 def build_parser():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -752,20 +773,7 @@ def build_parser():
 
     batch = sub.add_parser("batch", help="render captioned rooms through ComfyUI")
     common(batch)
-    batch.add_argument("--dry-run", action="store_true",
-                       help="print the plan without contacting ComfyUI or writing files")
-    batch.add_argument("--no-memory-check", action="store_true",
-                       help=f"skip the {MEMORY_FLOOR_GB} GB available-memory guard")
-    batch.add_argument("--force", action="store_true",
-                       help="render the selected rooms again, even when done or stuck")
-    batch.add_argument("--match-strength", type=match_strength, default=default_match_strength(),
-                       metavar="X",
-                       help="how far each render moves toward its source's colours, 0 to 1 "
-                            "(default: %(default)s, or DIG_MATCH_STRENGTH)")
-    batch.add_argument("--workflow", choices=sorted(comfy_client.WORKFLOWS),
-                       default=default_workflow(), metavar="NAME",
-                       help="render workflow: " + ", ".join(sorted(comfy_client.WORKFLOWS))
-                            + " (default: %(default)s, or DIG_WORKFLOW)")
+    render_options(batch)
     batch.set_defaults(func=cmd_batch)
 
     review = sub.add_parser("review", help="compare promoted rooms with their sources through "

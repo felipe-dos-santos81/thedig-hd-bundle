@@ -20,6 +20,7 @@ class MakeTests(unittest.TestCase):
                 "./run_batch.sh batch --dry-run --match-strength 0.5 --workflow qwen-image-2.1-i2i",
             ("batch", "room=58", "memcheck=0", "force=1", "dst=data/spike"):
                 './run_batch.sh batch --room 58 --dst "data/spike" --no-memory-check --force',
+            ("batch", "room=11", "dedither=none"): "./run_batch.sh batch --room 11 --dedither none",
             ("review", "force=1"): "./run_batch.sh review --force",
             ("verify", "src=/x"): './run_batch.sh verify --src "/x"',
             ("server",): "./run_server.sh",

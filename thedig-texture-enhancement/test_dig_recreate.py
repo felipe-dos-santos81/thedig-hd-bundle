@@ -209,9 +209,9 @@ class RenderRoomTests(DriverFixture):
         self.entries = load_rooms(self.rooms_file)
         self.workflow = comfy_client.WORKFLOWS["qwen-edit-2511-canny"]
 
-    def render(self, number, transform=None, corrections=()):
+    def render(self, number, transform=None, corrections=(), dedither=room_geometry.DEDITHER_METHOD):
         room = self.room(number)
-        args = argparse.Namespace(src=self.src, dst=self.dst, match_strength=0.5)
+        args = argparse.Namespace(src=self.src, dst=self.dst, match_strength=0.5, dedither=dedither)
         with testkit.comfy_stub(comfy_dir=self.comfy_dir,
                                 render=testkit.fake_render(transform)) as stub:
             result = a.render_room(args, self.workflow, room, self.entries[room.key],
@@ -266,6 +266,10 @@ class RenderRoomTests(DriverFixture):
         self.assertTrue((out[:, 4256:] == 0).all())
         self.assertEqual(self.record(3)["wrap"], [840, 224])
 
+    def test_the_dedither_method_is_recorded(self):
+        self.render(1, dedither="none")
+        self.assertEqual(self.record(1)["dedither"], "none")
+
     def test_a_shifted_render_is_not_promoted(self):
         (_, result), _ = self.render(1, transform=testkit.shift_right)
         self.assertFalse(result.passed)
@@ -292,7 +296,8 @@ class RenderRoomTests(DriverFixture):
                 raise TimeoutError("no history for p1 within 1800s")
             return good(workflow, **kw)
         room = self.room(2)
-        args = argparse.Namespace(src=self.src, dst=self.dst, match_strength=0.5)
+        args = argparse.Namespace(src=self.src, dst=self.dst, match_strength=0.5,
+                                  dedither=room_geometry.DEDITHER_METHOD)
         with testkit.comfy_stub(comfy_dir=self.comfy_dir, render=render):
             with self.assertRaises(TimeoutError):
                 a.render_room(args, self.workflow, room, self.entries[room.key], [])
