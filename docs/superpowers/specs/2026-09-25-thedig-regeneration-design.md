@@ -177,6 +177,11 @@ As in Atlantis, keyed by room key or object key. Geometry rejections are
   right**.
 - Margins are found on all four sides (the Atlantis `blank_margins`, on the
   colour key); the span is rounded out to multiples of 8 on both axes.
+- Room widths are multiples of 8 (SMAP strips), but six heights are not (230,
+  399, 425, 450, 500, 780). The guide and the render canvas are **padded** at
+  the bottom to the next multiple of 8 rows by repeating the last row, every
+  window's 4x size is then a multiple of 32, and `finish_room` crops the
+  canvas back to exactly `(4w, 4h)` before the colour match and the gate.
 - Wraparound detection and the seam window stay horizontal-only, as in
   Atlantis; a wraparound room with more than one window row is a `plan_room`
   error (none exists in the Dig; it would need a design change).
@@ -379,8 +384,10 @@ As in Atlantis: a render that raises writes `attempt-N.error.txt`, counts as
 failed, never counts toward STUCK, and batch sweeps the item's stray ComfyUI
 outputs. `/free` is sent at the end of `batch` and `objects` and at the start
 of `review`, and the memory floor applies to both render stages. Exit code 1
-when any item failed on infrastructure. Placement errors and a pre-0.2.0
-manifest are preflight failures (exit 2).
+when any item failed on infrastructure. A pre-0.2.0 manifest, or an object
+entry missing `room`, `x` or `y`, is a load failure (exit 2). An object whose
+rectangle is not inside its room (§6) loads, is reported `BADPLACE` by
+`objects` and `verify`, and is never rendered; it does not stop the others.
 
 ## 17. Testing
 
