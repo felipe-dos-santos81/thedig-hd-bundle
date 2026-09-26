@@ -29,6 +29,10 @@ def spans(windows):
     return [(w.x0, w.x1) for w in windows]
 
 
+def boxes(windows):
+    return [w.box for w in windows]
+
+
 class GuideTests(unittest.TestCase):
     def test_build_guide_sizes(self):
         guide = rg.build_guide(fixture_room(2))
@@ -52,6 +56,14 @@ class GuideTests(unittest.TestCase):
     def test_unknown_method(self):
         with self.assertRaisesRegex(ValueError, "unknown de-dither method 'median'"):
             rg.dedither(checkerboard((0, 0, 0), (1, 1, 1)), "median")
+
+    def test_the_guide_is_padded_to_whole_strips(self):
+        image = testkit.to_image(testkit.room_pixels(testkit.room(9, 352, 230)))
+        guide = rg.build_guide(image)
+        self.assertEqual((guide.native.size, guide.full.size), ((352, 230), (1408, 928)))
+        padded = rg.pad_rows(image.convert("RGB"), 232)
+        last = np.asarray(image.convert("RGB"))[-1]
+        self.assertTrue((np.asarray(padded)[230:] == last).all())
 
 
 class MarginTests(unittest.TestCase):
@@ -100,37 +112,40 @@ class WrapTests(unittest.TestCase):
 class WindowPlanTests(unittest.TestCase):
     def test_known_plans(self):
         cases = {
-            (0, 320): [(0, 320)],
-            (0, 176): [(0, 176)],
-            (64, 240): [(64, 240)],
-            (0, 568): [(0, 320), (248, 568)],
-            (0, 840): [(0, 320), (168, 488), (344, 664), (520, 840)],
-            (0, 1280): [(0, 320), (240, 560), (480, 800), (720, 1040), (960, 1280)],
+            (0, 320, 320): [(0, 320)],
+            (64, 240, 320): [(64, 240)],
+            (0, 568, 320): [(0, 320), (248, 568)],
+            (0, 840, 320): [(0, 320), (168, 488), (344, 664), (520, 840)],
+            (0, 232, 240): [(0, 232)],
+            (0, 400, 240): [(0, 240), (160, 400)],
+            (0, 472, 240): [(0, 240), (112, 352), (232, 472)],
+            (0, 784, 240): [(0, 240), (136, 376), (272, 512), (408, 648), (544, 784)],
         }
-        for (start, end), expected in cases.items():
-            with self.subTest(span=(start, end)):
-                self.assertEqual(spans(rg.plan_windows(start, end)), expected)
+        for (start, end, size), expected in cases.items():
+            with self.subTest(span=(start, end, size)):
+                self.assertEqual(list(rg.plan_axis(start, end, size)), expected)
 
-    def test_rules_hold_for_every_corpus_width(self):
-        for end in range(328, 1288, 8):
-            with self.subTest(end=end):
-                windows = rg.plan_windows(0, end)
-                self.assertEqual((windows[0].x0, windows[-1].x1), (0, end))
-                for win in windows:
-                    self.assertLessEqual(win.width, rg.WINDOW_WIDTH)
-                    self.assertEqual(win.x0 % 8, 0)
-                for left, right in zip(windows, windows[1:]):
-                    self.assertGreaterEqual(left.x1 - right.x0, rg.WINDOW_OVERLAP)
-                    self.assertLess(left.x0, right.x0)
+    def test_rules_hold_on_both_axes(self):
+        for size in (rg.WINDOW_HEIGHT, rg.WINDOW_WIDTH):
+            for end in range(size + 8, 2000, 8):
+                with self.subTest(size=size, end=end):
+                    spans = rg.plan_axis(0, end, size)
+                    self.assertEqual((spans[0][0], spans[-1][1]), (0, end))
+                    for a, b in spans:
+                        self.assertEqual((b - a, a % 8), (size, 0))
+                    for (a0, a1), (b0, _) in zip(spans, spans[1:]):
+                        self.assertGreaterEqual(a1 - b0, rg.WINDOW_OVERLAP)
+                        self.assertLess(a0, b0)
 
 
 class RoomPlanTests(unittest.TestCase):
     def test_fixture_rooms(self):
         one = rg.plan_room(fixture_room(1))
-        self.assertEqual((spans(one.windows), one.wrap, one.span), ([(0, 320)], None, (0, 320)))
+        self.assertEqual((boxes(one.windows), one.wrap, one.span),
+                         ([(0, 0, 320, 144)], None, (0, 320)))
         self.assertEqual(rg.stitch_boundaries(one), [], msg="stitch boundaries")
         two = rg.plan_room(fixture_room(2))
-        self.assertEqual(spans(two.windows), [(0, 320), (248, 568)])
+        self.assertEqual(boxes(two.windows), [(0, 0, 320, 144), (248, 0, 568, 144)])
         self.assertEqual(rg.stitch_boundaries(two), [1136], msg="stitch boundaries")
         wrap = rg.plan_room(fixture_room(3))
         self.assertEqual((wrap.wrap, wrap.span, wrap.margins),
@@ -144,11 +159,35 @@ class RoomPlanTests(unittest.TestCase):
         pixels[:, :66], pixels[:, 239:] = 0, 0      # the labyrinth pieces' side margins
         plan = rg.plan_room(testkit.to_image(pixels))
         self.assertEqual((plan.margins.left, plan.margins.right), (66, 81))
-        self.assertEqual((plan.span, spans(plan.windows)), ((64, 240), [(64, 240)]))
+        self.assertEqual((plan.span, boxes(plan.windows)), ((64, 240), [(64, 0, 240, 200)]))
 
     def test_a_flat_room_has_nothing_to_render(self):
         with self.assertRaisesRegex(ValueError, "set kind: skip"):
             rg.plan_room(fixture_room(4))
+
+    def test_a_tall_room_is_padded_and_planned_in_rows(self):
+        plan = rg.plan_room(testkit.to_image(testkit.room_pixels(testkit.room(9, 352, 470))))
+        self.assertEqual((plan.height, plan.span, plan.rows), (472, (0, 352), (0, 472)))
+        self.assertEqual(boxes(plan.windows),
+                         [(0, 0, 320, 240), (32, 0, 352, 240),
+                          (0, 112, 320, 352), (32, 112, 352, 352),
+                          (0, 232, 320, 472), (32, 232, 352, 472)])
+        for win in plan.windows:
+            self.assertEqual((win.width * 4 % 32, win.height * 4 % 32), (0, 0))
+
+    def test_top_and_bottom_margins_trim_the_rows(self):
+        pixels = testkit.room_pixels(testkit.room(9, 320, 144))
+        pixels[:28], pixels[-26:] = 0, 0
+        plan = rg.plan_room(testkit.to_image(pixels))
+        self.assertEqual((plan.margins.top, plan.margins.bottom, plan.rows), (28, 26, (24, 120)))
+
+    def test_a_wraparound_taller_than_one_window_row_is_refused(self):
+        # right_margin=88 makes content_end land exactly at period + span (840 + 224 = 1064
+        # of 1152), the same pairing as the wraparound fixture (DEFAULT_ROOMS[2]); without it
+        # find_wrap never matches and no ValueError is raised.
+        spec = testkit.room(9, 1152, 480, wrap=(840, 224), right_margin=88)
+        with self.assertRaisesRegex(ValueError, "taller than one window row"):
+            rg.plan_room(testkit.to_image(testkit.room_pixels(spec)))
 
 
 class WindowInputTests(unittest.TestCase):

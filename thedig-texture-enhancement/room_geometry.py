@@ -13,8 +13,10 @@ from PIL import Image, ImageFilter
 
 from source_tree import SCALE, colour_keys
 
-WINDOW_WIDTH = 320          # Wt: the widest window, native columns (the spike tunes it)
-WINDOW_OVERLAP = 64         # Ov: the least overlap between neighbouring windows
+WINDOW_WIDTH = 320          # the widest window, native columns
+WINDOW_HEIGHT = 240         # the tallest window, native rows (the spike checks it)
+WINDOW_OVERLAP = 64         # the least overlap between neighbouring windows, on each axis
+ALIGN = 8                   # window edges and the padded canvas height, native px
 DEDITHER_METHODS = ("palette-smooth", "gaussian")
 DEDITHER_METHOD = "palette-smooth"
 DEDITHER_THRESHOLD = 64.0   # palette-smooth: the RGB distance of a neighbour still averaged in
@@ -54,15 +56,27 @@ def dedither(rgb, method=DEDITHER_METHOD):
     return Image.fromarray(np.round(total / count).astype(np.uint8))
 
 
+def pad_rows(image, height):
+    """`image` with its last row repeated down to `height` rows (a copy when it is tall enough)."""
+    if image.height >= height:
+        return image.copy()
+    out = Image.new(image.mode, (image.width, height))
+    out.paste(image, (0, 0))
+    last = image.crop((0, image.height - 1, image.width, image.height))
+    out.paste(last.resize((image.width, height - image.height)), (0, image.height))
+    return out
+
+
 @dataclass(frozen=True)
 class Guide:
     native: Image.Image     # de-dithered at native size: what the geometry check compares with
-    full: Image.Image       # native upscaled 4x (Lanczos): reference, Canny input, img2img start
+    full: Image.Image       # native padded to ALIGN rows, upscaled 4x (Lanczos)
 
 
 def build_guide(image, method=DEDITHER_METHOD):
     native = dedither(image.convert("RGB"), method)
-    full = native.resize((native.width * SCALE, native.height * SCALE),
+    padded = pad_rows(native, ALIGN * math.ceil(native.height / ALIGN))
+    full = padded.resize((padded.width * SCALE, padded.height * SCALE),
                          Image.Resampling.LANCZOS)
     return Guide(native, full)
 
@@ -123,28 +137,42 @@ def find_wrap(pixels, content_end):
 
 @dataclass(frozen=True)
 class Window:
-    x0: int                 # native columns [x0, x1), full height
+    x0: int                 # native columns [x0, x1) and rows [y0, y1)
     x1: int
+    y0: int
+    y1: int
 
     @property
     def width(self):
         return self.x1 - self.x0
 
+    @property
+    def height(self):
+        return self.y1 - self.y0
 
-def plan_windows(start, end):
-    """Windows over columns [start, end): at most WINDOW_WIDTH wide, neighbours
-    overlapping by at least WINDOW_OVERLAP, each start `start` plus a multiple
-    of 8, the first at `start` and the last flush with `end`."""
-    width, overlap = WINDOW_WIDTH, WINDOW_OVERLAP
+    @property
+    def box(self):
+        return (self.x0, self.y0, self.x1, self.y1)
+
+    @property
+    def box4(self):
+        return tuple(v * SCALE for v in self.box)
+
+
+def plan_axis(start, end, size):
+    """Spans (a, b) over [start, end): at most `size` long, neighbours overlapping
+    by at least WINDOW_OVERLAP, each start `start` plus a multiple of ALIGN, the
+    first at `start` and the last flush with `end`."""
+    overlap = WINDOW_OVERLAP
     span = end - start
-    if span <= width:
-        return (Window(start, end),)
-    n = math.ceil((span - overlap) / (width - overlap))
+    if span <= size:
+        return ((start, end),)
+    n = math.ceil((span - overlap) / (size - overlap))
     while True:
-        step = (span - width) / (n - 1)
-        starts = [start + 8 * math.floor(i * step / 8) for i in range(n - 1)] + [end - width]
-        if all(a + width - b >= overlap for a, b in zip(starts, starts[1:])):
-            return tuple(Window(s, s + width) for s in starts)
+        step = (span - size) / (n - 1)
+        starts = [start + ALIGN * math.floor(i * step / ALIGN) for i in range(n - 1)] + [end - size]
+        if all(a + size - b >= overlap for a, b in zip(starts, starts[1:])):
+            return tuple((s, s + size) for s in starts)
         n += 1
 
 
@@ -152,19 +180,22 @@ def plan_windows(start, end):
 class RoomPlan:
     margins: Margins
     wrap: Wrap | None
-    span: tuple             # (start, end): the native columns the windows cover
-    windows: tuple          # of Window, left to right
+    span: tuple             # (x0, x1): the native columns the windows cover
+    rows: tuple             # (y0, y1): the native rows the windows cover, within `height`
+    windows: tuple          # of Window, row by row, left to right
+    height: int             # the canvas height: the room's rows rounded up to ALIGN
 
 
 def plan_room(image):
     """Margins, wraparound and windows of one room.
 
-    The span skips whole-column margins, rounded out to 8 columns so every
-    window's 4x width is a multiple of 32; a wraparound room's span ends at its
-    period. Raises ValueError for a room with nothing to render.
+    Both spans skip whole margin lines, rounded out to ALIGN, so every window's
+    4x size is a multiple of 32; the rows may run into the padding below the
+    room. A wraparound room's span ends at its period and it has one window
+    row. Raises ValueError for a room with nothing to render.
     """
     pixels = colour_keys(image)
-    w = pixels.shape[1]
+    h, w = pixels.shape
     margins = blank_margins(pixels)
     if margins.left >= w:
         raise ValueError("the room is one flat colour: nothing to render (set kind: skip)")
@@ -173,12 +204,21 @@ def plan_room(image):
     if wrap and wrap.period < WINDOW_WIDTH:
         raise ValueError(f"the wraparound period {wrap.period} is narrower than one "
                          f"window ({WINDOW_WIDTH}); lower WINDOW_WIDTH")
-    start = 8 * (margins.left // 8)
-    end = wrap.period if wrap else min(w, 8 * math.ceil(content_end / 8))
-    windows = plan_windows(start, end)
-    if any(win.width % 8 for win in windows):
-        raise ValueError(f"window widths must be multiples of 8 native columns: {windows}")
-    return RoomPlan(margins, wrap, (start, end), windows)
+    height = ALIGN * math.ceil(h / ALIGN)
+    start = ALIGN * (margins.left // ALIGN)
+    end = wrap.period if wrap else min(w, ALIGN * math.ceil(content_end / ALIGN))
+    if wrap:
+        if height > WINDOW_HEIGHT:
+            raise ValueError(f"a wraparound room taller than one window row ({height} > "
+                             f"{WINDOW_HEIGHT} rows) needs a design change")
+        top, bottom = 0, height
+    else:
+        top = ALIGN * (margins.top // ALIGN)
+        bottom = min(height, ALIGN * math.ceil((h - margins.bottom) / ALIGN))
+    columns = plan_axis(start, end, WINDOW_WIDTH)
+    rows = plan_axis(top, bottom, WINDOW_HEIGHT)
+    windows = tuple(Window(x0, x1, y0, y1) for y0, y1 in rows for x0, x1 in columns)
+    return RoomPlan(margins, wrap, (start, end), (top, bottom), windows, height)
 
 
 def stitch_from(window, previous):
