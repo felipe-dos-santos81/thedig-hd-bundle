@@ -63,9 +63,10 @@ def match(render, guide, strength=1.0, mask=None):
     """The render shifted and scaled per Lab band toward `guide`'s mean and
     spread, blended by `strength`, with both images' statistics taken over the
     pixels `mask` marks (all when None) and the transfer applied to every pixel.
-    Returns a new RGB image of the render's size; strength 0 returns the raw
-    pixels unchanged (no Lab round trip)."""
-    if strength == 0:
+    Returns a new RGB image of the render's size; strength 0, or a `mask` that
+    marks no pixel (nothing to take statistics from), returns the raw pixels
+    unchanged (no Lab round trip)."""
+    if strength == 0 or (mask is not None and not mask.any()):
         return render.convert("RGB").copy()
     lab = _to_lab(render)
     means, stds = _stats(lab, mask)

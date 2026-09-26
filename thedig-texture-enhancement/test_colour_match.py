@@ -83,6 +83,8 @@ class MatchTests(unittest.TestCase):
         self.assertTrue((np.abs(inside.astype(int) - 100) <= 1).all())
         unmasked = np.asarray(cm.match(render, guide, 1.0))[:, :8]
         self.assertTrue((np.abs(unmasked.astype(int) - 100) > 1).any())
+        empty = cm.match(render, guide, 1.0, mask=np.zeros((8, 16), bool))
+        self.assertEqual(empty.tobytes(), render.convert("RGB").tobytes())
 
 
 if __name__ == "__main__":
