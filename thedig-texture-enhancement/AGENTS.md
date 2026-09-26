@@ -183,10 +183,13 @@ Per `render`-class object, over its room's already-promoted 4x render:
    then box-blur softened (`MASK_SOFTEN`); the diff pixels themselves stay
    255 (paint) after softening. Everything else is 0 (keep the promoted
    room). The workflow's reference input is the composite, not the guide.
-5. **Prompt:** the room's render prompt (its caption, kind, style,
-   corrections) plus `OBJECT_NOTE`: repaint only the changed area, in the
-   same style, light and brushwork as its surroundings, keeping its outline
-   where the reference shows it.
+5. **Prompt:** the room's render prompt (kind, style, corrections) plus
+   `OBJECT_NOTE`: repaint only the changed area, in the same style, light and
+   brushwork as its surroundings, keeping its outline where the reference
+   shows it. The caption is cut to its room-wide sections
+   (`prompts.room_wide_caption`: SCENE, MEDIUM, LIGHTING, PALETTE, TEXT):
+   with LAYOUT and OBJECTS, the object spike painted the caption's asteroid
+   and crystal cone into objects of rooms 2 and 27.
 6. **Seed:** `SEED + attempt - 1`, as rooms.
 7. **Finish** (`object_geometry.compose`): colour-match the render toward the
    object's guide, with statistics over the diff pixels only, then lay it
@@ -255,7 +258,8 @@ Render one room through any new or edited graph before trusting it.
   keep the exact composition and the reference's colours, light and shadow.
   Then the insert rules for an `insert` room (the caption's TEXT as LETTERING
   when present), the window note for a multi-window room, `OBJECT_NOTE` for
-  an object render, REFERENCE OBSERVATIONS (the caption), then corrections
+  an object render, REFERENCE OBSERVATIONS (the caption; for an object only
+  its room-wide sections), then corrections
   (the review's issues, or `GEOMETRY_CORRECTION` after a geometry rejection).
   The negative prompt (`negative_prompt(style)`) is `PAINTED_NEGATIVE` or
   `RENDERED_NEGATIVE` (the rendered one drops "3D render" and "CGI", which

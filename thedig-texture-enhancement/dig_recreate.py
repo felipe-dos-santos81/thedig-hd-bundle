@@ -43,7 +43,7 @@ import room_geometry
 import source_tree
 from prompts import (GEOMETRY_CORRECTION, OBJECT_NOTE, SEAM_NOTE, OBJECT_REVIEW_BATCH,
                      caption_room, medium_style, negative_prompt, render_prompt, review_objects,
-                     review_room, vlm_is_serving, window_note)
+                     review_room, room_wide_caption, vlm_is_serving, window_note)
 from rooms_file import (Review, RoomsFileError, check_coverage, load_reviews, load_rooms,
                         save_reviews, save_rooms)
 from source_tree import SourceError
@@ -764,8 +764,10 @@ def render_object(args, workflow, obj, room, entry, corrections, cls):
             inputs = object_geometry.object_inputs(room_hd, room_image, obj_image, obj.x, obj.y,
                                                    method)
             style = entry.style or "painted"
-            positive = render_prompt(entry.caption, entry.kind, corrections, OBJECT_NOTE,
-                                     workflow.reference, style)
+            # Only the room-wide sections: the room's layout names things outside the
+            # object's context, and the render paints them into the object's mask.
+            positive = render_prompt(room_wide_caption(entry.caption), entry.kind, corrections,
+                                     OBJECT_NOTE, workflow.reference, style)
             negative = negative_prompt(style)
             paths = {}
             for part, image in (("guide", inputs.guide), ("composite", inputs.composite),

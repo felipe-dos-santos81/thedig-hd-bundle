@@ -113,6 +113,20 @@ def section(caption, label):
     return None
 
 
+# The sections an object's prompt keeps: what the whole room is like, not where its
+# things are. With LAYOUT and OBJECTS, the object spike painted the caption's
+# asteroid and crystal cone into the object's small repaint area.
+ROOM_WIDE_SECTIONS = ("SCENE", "MEDIUM", "LIGHTING", "PALETTE", "TEXT")
+
+
+def room_wide_caption(caption):
+    """The caption's ROOM_WIDE_SECTIONS as "LABEL: text" lines, in that order; the
+    caption unchanged when it has none of them (a hand-written note)."""
+    parts = [f"{label}: {text}" for label in ROOM_WIDE_SECTIONS
+             if (text := section(caption, label)) is not None]
+    return "\n".join(parts) if parts else caption
+
+
 def text_section(caption):
     """The caption's TEXT section, or None when it is absent or says there is none."""
     text = section(caption, "TEXT")

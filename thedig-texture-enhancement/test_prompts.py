@@ -43,6 +43,19 @@ class TextSectionTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertEqual(p.text_section(text), expected)
 
+    def test_room_wide_caption_drops_the_object_layout(self):
+        # The object spike: an object prompt carrying the room's LAYOUT and OBJECTS
+        # painted the caption's asteroid and crystal cone into the object's mask.
+        caption = ("SCENE: a shuttle in space.\nMEDIUM: pre-rendered 3D\n"
+                   "VIEW: from above\nLAYOUT:\n- asteroid at the right\n"
+                   "OBJECTS: an asteroid\n**LIGHTING:** the sun at the top\n"
+                   "PALETTE: white and black\nTEXT: none\nINVARIANTS: the asteroid stays whole")
+        self.assertEqual(p.room_wide_caption(caption),
+                         "SCENE: a shuttle in space.\nMEDIUM: pre-rendered 3D\n"
+                         "LIGHTING: the sun at the top\nPALETTE: white and black\nTEXT: none")
+        self.assertEqual(p.room_wide_caption("A hand-written note with no sections."),
+                         "A hand-written note with no sections.")
+
 
 class RenderPromptTests(unittest.TestCase):
     def test_scene(self):

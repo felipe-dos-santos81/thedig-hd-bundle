@@ -672,6 +672,17 @@ class ObjectTests(DriverFixture):
     def object_record(self, key, attempt=1):
         return json.loads((self.obj_dst / ".quality" / key / f"attempt-{attempt}.json").read_text())
 
+    def test_object_prompts_carry_only_the_room_wide_caption(self):
+        testkit.write_rooms(self.rooms_file, caption=(
+            "SCENE: a test room.\nLAYOUT: a lamp at the left.\nOBJECTS: the lamp\n"
+            "PALETTE: ochre\nTEXT: none"))
+        _, _, _, stub = self.objects("--object", "obj010_02")
+        positive = stub.render.call_args.kwargs["positive"]
+        self.assertIn("SCENE: a test room.", positive)
+        self.assertIn("PALETTE: ochre", positive)
+        self.assertNotIn("a lamp at the left", positive)
+        self.assertNotIn("OBJECTS:", positive)
+
     def test_classifies_renders_copies_and_reports_a_bad_placement(self):
         code, out, err, stub = self.objects()
         self.assertEqual(code, 0, err)
