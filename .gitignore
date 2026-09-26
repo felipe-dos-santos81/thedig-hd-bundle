@@ -1,2 +1,19 @@
+# Game data and generated art: never commit (the remote is public)
+out/
+data/
+reviews.yaml
+*.pending
+*.tmp
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Agent scratch space
 .superpowers/
+
+# macOS
 .DS_Store
