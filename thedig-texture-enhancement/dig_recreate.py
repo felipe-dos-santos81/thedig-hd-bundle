@@ -16,7 +16,7 @@ Human-paced stages, each a subcommand:
             attempt records
 
 The source tree is thedig-textures-exporter's output; its manifest.json (read by
-source_tree) decides which rooms exist. Services are external: vLLM
+source_tree) decides which rooms and objects exist. Services are external: vLLM
 (Qwen/Qwen3.8-27B on :8000) and ComfyUI (:8188) are started by the user; this
 driver only checks that they answer.
 """
@@ -186,10 +186,10 @@ def cmd_verify(args):
 
 def caption_images(src, room):
     """What the VLM sees: the room at 2x, then each window at 4x when there are several."""
-    indexed = source_tree.open_indexed(src, room)
-    rgb = indexed.convert("RGB")
+    image = source_tree.open_rgba(src, room)
+    rgb = image.convert("RGB")
     images = [rgb.resize((rgb.width * 2, rgb.height * 2), Image.Resampling.NEAREST)]
-    plan = room_geometry.plan_room(indexed)
+    plan = room_geometry.plan_room(image)
     if len(plan.windows) > 1:
         for win in plan.windows:
             crop = rgb.crop((win.x0, 0, win.x1, rgb.height))
@@ -227,12 +227,12 @@ def cmd_caption(args):
 
 # ---- render one room --------------------------------------------------------
 
-def finish_room(canvas, guide, plan, indexed, strength):
+def finish_room(canvas, guide, plan, image, strength):
     """The stitched 4x `canvas` colour-matched toward the guide by `strength`,
     fixed up, and checked against the de-dithered source:
     (final image, GeometryResult, stitch boundaries)."""
     matched = colour_match.match(canvas, guide.full, strength)
-    final = room_geometry.apply_fixups(matched, plan, indexed)
+    final = room_geometry.apply_fixups(matched, plan, image)
     if final.size != guide.full.size:
         raise RuntimeError(f"the stitched room is {final.width}x{final.height}, "
                            f"expected {guide.full.width}x{guide.full.height}")
@@ -261,9 +261,9 @@ def render_room(args, workflow, room, entry, corrections):
     started = time.monotonic()
     stage = None               # the window being rendered
     try:
-        indexed = source_tree.open_indexed(args.src, room)
-        guide = room_geometry.build_guide(indexed)
-        plan = room_geometry.plan_room(indexed)
+        image = source_tree.open_rgba(args.src, room)
+        guide = room_geometry.build_guide(image)
+        plan = room_geometry.plan_room(image)
         canvas = guide.full.copy()
         prompt_log = []
 
@@ -311,7 +311,7 @@ def render_room(args, workflow, room, entry, corrections):
                      f"workflow: {workflow.name}\n\n" + "\n\n".join(prompt_log)
                      + f"\n\n--- negative ---\n{PAINTED_NEGATIVE}\n")
         canvas.save(audit / f"attempt-{attempt}.png")
-        final, result, boundaries = finish_room(canvas, guide, plan, indexed, args.match_strength)
+        final, result, boundaries = finish_room(canvas, guide, plan, image, args.match_strength)
         for x, ratio in zip(boundaries, result.seam_ratios):
             if ratio > geometry_check.SEAM_WARN:
                 print(f"  warning: {room.key} seam at 4x column {x}: step {ratio:.1f}x the local "
@@ -444,15 +444,15 @@ def corrections_for(args, room, reviews):
 
 def write_nearest(args, room):
     """A skip room's output: its source enlarged 4x, nearest neighbour."""
-    indexed = source_tree.open_indexed(args.src, room)
-    save_image_atomic(indexed.convert("RGB").resize(room.out_size, Image.Resampling.NEAREST),
+    image = source_tree.open_rgba(args.src, room)
+    save_image_atomic(image.convert("RGB").resize(room.out_size, Image.Resampling.NEAREST),
                       args.dst / room.out_name)
 
 
 def plan_line(args, room, entry, corrections):
     """One dry-run line: the room's size, windows, wraparound, margins and
     corrections; marked NOCAPTION instead of render for an uncaptioned room."""
-    plan = room_geometry.plan_room(source_tree.open_indexed(args.src, room))
+    plan = room_geometry.plan_room(source_tree.open_rgba(args.src, room))
     w, h = room.out_size
     captioned = bool(entry.caption.strip())
     mark = "render" if captioned else "NOCAPTION"
@@ -598,9 +598,9 @@ def cmd_batch(args):
 
 def review_images(src, room, output):
     """([(guide window, render window), ...], whole render) for the VLM."""
-    indexed = source_tree.open_indexed(src, room)
-    guide = room_geometry.build_guide(indexed)
-    plan = room_geometry.plan_room(indexed)
+    image = source_tree.open_rgba(src, room)
+    guide = room_geometry.build_guide(image)
+    plan = room_geometry.plan_room(image)
     with Image.open(output) as im:
         render = im.convert("RGB")
     pairs = []
@@ -697,7 +697,7 @@ def build_parser():
 
     def common(p):
         p.add_argument("--src", type=Path, default=SRC_ROOT,
-                       help="thedig-textures-exporter output: manifest.json and indexed/ "
+                       help="thedig-textures-exporter output: manifest.json and la1/ "
                             "(default: %(default)s, or DIG_SRC)")
         p.add_argument("--dst", type=Path, default=DST_ROOT,
                        help="output tree (default: %(default)s, or DIG_DST)")

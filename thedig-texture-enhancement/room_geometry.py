@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import numpy as np
 from PIL import Image, ImageFilter
 
-from source_tree import SCALE
+from source_tree import SCALE, colour_keys
 
 WINDOW_WIDTH = 320          # Wt: the widest window, native columns (the spike tunes it)
 WINDOW_OVERLAP = 64         # Ov: the least overlap between neighbouring windows
@@ -24,15 +24,6 @@ WRAP_MATCH = 0.999          # ... in at least this fraction of their pixels
 
 
 # ---- guide ------------------------------------------------------------------
-
-def indices(indexed):
-    """The palette indices of a P-mode image, a (height, width) uint8 array."""
-    return np.asarray(indexed, dtype=np.uint8)
-
-
-def to_rgb(indexed):
-    return indexed.convert("RGB")
-
 
 def dedither(rgb, method=DEDITHER_METHOD):
     """`rgb` with its dithering smoothed away, at its own size.
@@ -69,8 +60,8 @@ class Guide:
     full: Image.Image       # native upscaled 4x (Lanczos): reference, Canny input, img2img start
 
 
-def build_guide(indexed, method=DEDITHER_METHOD):
-    native = dedither(to_rgb(indexed), method)
+def build_guide(image, method=DEDITHER_METHOD):
+    native = dedither(image.convert("RGB"), method)
     full = native.resize((native.width * SCALE, native.height * SCALE),
                          Image.Resampling.LANCZOS)
     return Guide(native, full)
@@ -81,13 +72,13 @@ def build_guide(indexed, method=DEDITHER_METHOD):
 @dataclass(frozen=True)
 class Margins:
     left: int               # columns (left, right) or rows (top, bottom) at each edge
-    right: int              # that are all one palette index, the same one throughout
+    right: int              # that are all one colour, the same one throughout
     top: int
     bottom: int
 
 
 def _flat_run(lines):
-    """How many leading lines are each one palette index, the same index throughout."""
+    """How many leading lines are each one colour, the same colour throughout."""
     count, value = 0, None
     for line in lines:
         if (line != line[0]).any():
@@ -165,14 +156,14 @@ class RoomPlan:
     windows: tuple          # of Window, left to right
 
 
-def plan_room(indexed):
+def plan_room(image):
     """Margins, wraparound and windows of one room.
 
     The span skips whole-column margins, rounded out to 8 columns so every
     window's 4x width is a multiple of 32; a wraparound room's span ends at its
     period. Raises ValueError for a room with nothing to render.
     """
-    pixels = indices(indexed)
+    pixels = colour_keys(image)
     w = pixels.shape[1]
     margins = blank_margins(pixels)
     if margins.left >= w:
@@ -280,7 +271,7 @@ def apply_seam(canvas, plan, rendered):
     canvas.paste(rendered.crop((half * SCALE, 0, (half + q) * SCALE, h)), (0, 0))
 
 
-def apply_fixups(image, plan, indexed):
+def apply_fixups(image, plan, source):
     """A copy of the 4x `image` with the wraparound's repeat copied from the
     room's start, and the margins set to the source's flat colours."""
     out = image.copy()
@@ -290,8 +281,8 @@ def apply_fixups(image, plan, indexed):
         out.paste(out.crop((0, 0, span * SCALE, h)), (period * SCALE, 0))
     m = plan.margins
     if m.left or m.right or m.top or m.bottom:
-        flat = to_rgb(indexed).resize(out.size, Image.Resampling.NEAREST)
-        w, rows = indexed.width, indexed.height
+        flat = source.convert("RGB").resize(out.size, Image.Resampling.NEAREST)
+        w, rows = source.width, source.height
         for x0, y0, x1, y1 in ((0, 0, m.left, rows), (w - m.right, 0, w, rows),
                                (0, 0, w, m.top), (0, rows - m.bottom, w, rows)):
             if x1 > x0 and y1 > y0:

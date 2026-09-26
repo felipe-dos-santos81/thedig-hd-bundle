@@ -2,15 +2,15 @@
 writer, the ComfyUI and vLLM patch stacks, a fake window renderer, a
 CLI-capture helper, and where the real corpus is.
 
-The real source tree is thedig-textures-exporter's `out/`: indexed/rooms/room_NNN.png
-in P mode at native size, and manifest.json whose assets[] carry room, file,
-width, height, role and sha256.
+The real source tree is thedig-textures-exporter's `out/`: la1/roomNNN.png and
+la1/objNNN_SS.png, RGB or RGBA per the manifest's has_alpha, and manifest.json
+(tool_version 0.2.0 or later: room on every la1: entry, x and y on objects).
 """
 
 import contextlib
-import hashlib
 import io
 import json
+import os
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -24,29 +24,76 @@ import comfy_client
 import source_tree
 from rooms_file import RoomEntry, save_rooms
 
+# The real corpus: thedig-textures-exporter's output, and the rooms the shipped
+# rooms.yaml marks skip (one flat colour, line charts, a sprite sheet).
+REAL_SRC = Path(os.environ.get("DIG_SRC")
+                or Path(__file__).resolve().parent.parent / "thedig-textures-exporter" / "out")
+REAL_SKIP_ROOMS = (1, 86, 88, 93, 103, 104)
+
+
+def _real_corpus_loads():
+    try:
+        source_tree.load(REAL_SRC)
+        return True
+    except (source_tree.SourceError, OSError):
+        return False
+
+
+needs_real_corpus = unittest.skipUnless(
+    (REAL_SRC / "manifest.json").is_file() and _real_corpus_loads(),
+    "no loadable thedig-textures-exporter 0.2.0 output")
+
+
+def real_rooms():
+    """The real corpus's scene and insert rooms (source_tree.Room)."""
+    return [room for room in source_tree.load(REAL_SRC).rooms
+            if room.number not in REAL_SKIP_ROOMS]
+
+
 # Indices 2-13 lie far apart (RGB distance over 64), so de-dithering keeps
-# every block edge; index 0 is the margin colour.
+# every block edge; index 0 is the margin and transparent colour.
 BASE = [(0, 0, 0), (255, 255, 255), (200, 40, 40), (40, 200, 40), (40, 40, 200),
         (200, 200, 40), (200, 40, 200), (40, 200, 200), (120, 60, 20), (20, 120, 60),
         (60, 20, 120), (230, 140, 60), (60, 140, 230), (140, 230, 60)]
 PALETTE = BASE + [(i, i, i) for i in range(len(BASE), 256)]
 
 
-def room(number, width, height, *, seed=None, wrap=None, right_margin=0, flat=None):
+def room(number, width, height, *, seed=None, wrap=None, right_margin=0, flat=None,
+         alpha_rows=0, rgba=False):
     """A room for make_source: random 16-pixel blocks of indices 2-13 (seeded by
     `seed`, default the room number); `wrap=(period, span)` copies columns
     [0, span) onto [period, period + span); `right_margin` columns of index 0;
-    `flat=I` makes the whole room index I."""
+    `flat=I` makes the whole room index I; `alpha_rows` transparent rows at the
+    top (index 0, alpha 0); `rgba` writes RGBA even with nothing transparent."""
     return {"room": number, "width": width, "height": height,
             "seed": number if seed is None else seed, "wrap": wrap,
-            "right_margin": right_margin, "flat": flat}
+            "right_margin": right_margin, "flat": flat, "alpha_rows": alpha_rows,
+            "rgba": rgba or bool(alpha_rows)}
+
+
+def obj(key, room_number, x, y, width, height, *, seed=None, identical=False, alpha=False):
+    """An object image for make_source at (x, y) in room `room_number`:
+    `identical` copies the room's pixels under it; otherwise random 4-pixel
+    blocks of indices 2-13 seeded by `seed` (default: from the key). `alpha`
+    makes its outer 2-pixel ring transparent."""
+    return {"key": key, "room": room_number, "x": x, "y": y, "width": width,
+            "height": height, "seed": seed, "identical": identical, "alpha": alpha}
 
 
 DEFAULT_ROOMS = (
     room(1, 320, 144),                                          # one window
     room(2, 568, 144),                                          # two windows
-    room(3, 1152, 144, wrap=(840, 224), right_margin=88),       # room 58's shape
-    room(4, 16, 200, flat=0),                                   # a placeholder
+    room(3, 1152, 144, wrap=(840, 224), right_margin=88),       # a wraparound
+    room(4, 16, 200, flat=0),                                   # a placeholder (skip)
+)
+
+DEFAULT_OBJECTS = (
+    obj("obj010_01", 1, 40, 24, 48, 32, identical=True),        # state 01 = the room beneath
+    obj("obj010_02", 1, 40, 24, 48, 32),                        # state 02 differs: render
+    obj("obj011_01", 1, 200, 60, 40, 40, alpha=True),           # a sprite with alpha
+    obj("obj012_01", 4, 0, 0, 8, 8),                            # in a skip room: copy
+    obj("obj013_01", 1, 300, 100, 40, 40),                      # sticks out of room 1
+    obj("obj014_01", 2, 500, 16, 32, 24),                       # in the two-window room
 )
 
 
@@ -63,32 +110,87 @@ def room_pixels(spec):
         pixels[:, period:period + span] = pixels[:, :span]
     if spec["right_margin"]:
         pixels[:, w - spec["right_margin"]:] = 0
+    if spec["alpha_rows"]:
+        pixels[:spec["alpha_rows"]] = 0
     return pixels
 
 
-def indexed_image(pixels, palette=PALETTE):
-    """A P-mode image of `pixels` with `palette`."""
-    h, w = pixels.shape
-    image = Image.frombytes("P", (w, h), np.ascontiguousarray(pixels, np.uint8).tobytes())
-    image.putpalette([c for rgb in palette for c in rgb])
-    return image
+def room_alpha(spec):
+    """(h, w) uint8 alpha of an RGBA room, or None for an RGB one."""
+    if not spec["rgba"]:
+        return None
+    alpha = np.full((spec["height"], spec["width"]), 255, np.uint8)
+    alpha[:spec["alpha_rows"]] = 0
+    return alpha
 
 
-def make_source(root, rooms=DEFAULT_ROOMS):
-    """Write <root>/out like thedig-textures-exporter's `make extract` and return it."""
+def object_pixels(spec, rooms):
+    h, w, x, y = spec["height"], spec["width"], spec["x"], spec["y"]
+    if spec["identical"]:
+        under = room_pixels(next(r for r in rooms if r["room"] == spec["room"]))
+        return under[y:y + h, x:x + w].copy()
+    seed = spec["seed"] if spec["seed"] is not None else sum(map(ord, spec["key"]))
+    rng = np.random.default_rng(seed)
+    blocks = rng.integers(2, len(BASE), size=(-(-h // 4), -(-w // 4)), dtype=np.uint8)
+    return np.kron(blocks, np.ones((4, 4), np.uint8))[:h, :w].copy()
+
+
+def object_alpha(spec):
+    if not spec["alpha"]:
+        return None
+    alpha = np.zeros((spec["height"], spec["width"]), np.uint8)
+    alpha[2:-2, 2:-2] = 255
+    return alpha
+
+
+def to_image(pixels, alpha=None):
+    """An RGB image of palette indices `pixels`, RGBA with `alpha` when given;
+    transparent pixels take index 0's colour, like the exporter writes them."""
+    rgb = np.array(PALETTE, np.uint8)[pixels]
+    if alpha is None:
+        return Image.fromarray(rgb)
+    rgb[alpha == 0] = PALETTE[0]
+    return Image.fromarray(np.dstack([rgb, alpha]))
+
+
+def room_image(spec):
+    return to_image(room_pixels(spec), room_alpha(spec))
+
+
+def _asset(name, width, height, has_alpha, **placement):
+    return {"id": f"la1:{name}", "kind": "la1_bitmap", "source": "DIG.LA1", "frame": None,
+            "name": name, "width": width, "height": height, "has_alpha": has_alpha,
+            "palette": "0" * 64, "path": f"la1/{name}.png", **placement}
+
+
+def make_source(root, rooms=DEFAULT_ROOMS, objects=DEFAULT_OBJECTS, tool_version="0.2.0"):
+    """Write <root>/out like `thedig-textures extract --only la1` and return it."""
     src = Path(root) / "out"
+    (src / "la1").mkdir(parents=True, exist_ok=True)
     assets = []
     for spec in rooms:
-        rel = f"indexed/rooms/room_{spec['room']:03d}.png"
-        path = src / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        indexed_image(room_pixels(spec)).save(path)
-        assets.append({"room": spec["room"], "name": None, "role": "background",
-                       "width": spec["width"], "height": spec["height"], "file": rel,
-                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-                       "transparent_index": 5, "anomalies": []})
+        name = f"room{spec['room']:03d}"
+        room_image(spec).save(src / "la1" / f"{name}.png")
+        assets.append(_asset(name, spec["width"], spec["height"], spec["rgba"],
+                             room=spec["room"]))
+    for spec in objects:
+        to_image(object_pixels(spec, rooms), object_alpha(spec)).save(
+            src / "la1" / f"{spec['key']}.png")
+        assets.append(_asset(spec["key"], spec["width"], spec["height"], spec["alpha"],
+                             room=spec["room"], x=spec["x"], y=spec["y"]))
+    # Kinds the kit ignores, with no files behind them.
+    assets.append({"id": "akos:costume001_000", "kind": "la1_bitmap", "source": "DIG.LA1",
+                   "frame": None, "name": "costume001_000", "width": 8, "height": 11,
+                   "has_alpha": True, "palette": "0" * 64, "path": "la1/costume001_000.png"})
+    assets.append({"id": "san:sq1:00000", "kind": "san_frame", "source": "VIDEO/SQ1.SAN",
+                   "frame": 0, "name": None, "width": 320, "height": 200, "has_alpha": False,
+                   "palette": "0" * 64, "path": "san/SQ1/00000.png"})
     (src / "manifest.json").write_text(json.dumps(
-        {"assets": assets, "game": {"dir": "/game"}, "summary": {}}, indent=1))
+        {"tool": "thedig-textures", "tool_version": tool_version,
+         "extracted_at": "2026-09-25T00:00:00Z", "game_root": "0" * 64,
+         "counts": {"san_frames": 1, "nut_images": 0, "la1_bitmaps": len(assets) - 1,
+                    "errors": 0},
+         "assets": assets}, indent=1))
     return src
 
 

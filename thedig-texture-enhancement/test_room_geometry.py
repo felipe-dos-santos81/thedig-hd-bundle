@@ -16,7 +16,7 @@ def checkerboard(a, b, size=(32, 32)):
 
 def fixture_room(number):
     spec = next(s for s in testkit.DEFAULT_ROOMS if s["room"] == number)
-    return testkit.indexed_image(testkit.room_pixels(spec))
+    return testkit.room_image(spec)
 
 
 def noise(size, seed=0):
@@ -30,10 +30,6 @@ def spans(windows):
 
 
 class GuideTests(unittest.TestCase):
-    def test_to_rgb_uses_the_exact_palette(self):
-        index = int(testkit.room_pixels(testkit.DEFAULT_ROOMS[0])[0, 0])
-        self.assertEqual(rg.to_rgb(fixture_room(1)).getpixel((0, 0)), testkit.PALETTE[index])
-
     def test_build_guide_sizes(self):
         guide = rg.build_guide(fixture_room(2))
         self.assertEqual((guide.native.size, guide.full.size), ((568, 144), (2272, 576)))
@@ -146,7 +142,7 @@ class RoomPlanTests(unittest.TestCase):
     def test_margins_round_the_span_out_to_8_columns(self):
         pixels = testkit.room_pixels(testkit.room(9, 320, 200))
         pixels[:, :66], pixels[:, 239:] = 0, 0      # the labyrinth pieces' side margins
-        plan = rg.plan_room(testkit.indexed_image(pixels))
+        plan = rg.plan_room(testkit.to_image(pixels))
         self.assertEqual((plan.margins.left, plan.margins.right), (66, 81))
         self.assertEqual((plan.span, spans(plan.windows)), ((64, 240), [(64, 240)]))
 
@@ -222,25 +218,25 @@ class SeamTests(unittest.TestCase):
 class FixupTests(unittest.TestCase):
     def test_apply_fixups_blanks_margins_and_copies_the_wrap(self):
         with self.subTest("wrap copy and right margin"):
-            indexed = fixture_room(3)
-            out = np.asarray(rg.apply_fixups(noise((4608, 576), seed=7), rg.plan_room(indexed),
-                                             indexed))
+            image = fixture_room(3)
+            out = np.asarray(rg.apply_fixups(noise((4608, 576), seed=7), rg.plan_room(image),
+                                             image))
             self.assertTrue((out[:, 3360:4256] == out[:, :896]).all())
             self.assertTrue((out[:, 4256:] == 0).all())
         with self.subTest("top and bottom margins"):
             pixels = testkit.room_pixels(testkit.room(9, 320, 144))
             pixels[:28], pixels[-26:] = 0, 0            # room 58's letterbox rows
-            indexed = testkit.indexed_image(pixels)
-            out = np.asarray(rg.apply_fixups(noise((1280, 576), seed=8), rg.plan_room(indexed),
-                                             indexed))
+            image = testkit.to_image(pixels)
+            out = np.asarray(rg.apply_fixups(noise((1280, 576), seed=8), rg.plan_room(image),
+                                             image))
             self.assertTrue((out[:112] == 0).all() and (out[-104:] == 0).all())
             self.assertFalse((out[112:-104] == 0).all())
 
     def test_nothing_to_fix(self):
-        indexed = fixture_room(1)
-        image = noise((1280, 576), seed=9)
-        self.assertEqual(rg.apply_fixups(image, rg.plan_room(indexed), indexed).tobytes(),
-                         image.tobytes())
+        image = fixture_room(1)
+        canvas = noise((1280, 576), seed=9)
+        self.assertEqual(rg.apply_fixups(canvas, rg.plan_room(image), image).tobytes(),
+                         canvas.tobytes())
 
 
 if __name__ == "__main__":
