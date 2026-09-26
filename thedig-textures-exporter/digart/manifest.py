@@ -38,9 +38,12 @@ class AssetRecord:
     has_alpha: bool
     palette: str
     path: str
+    room: int | None = None
+    x: int | None = None
+    y: int | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "id": self.id,
             "kind": self.kind,
             "source": self.source,
@@ -52,6 +55,11 @@ class AssetRecord:
             "palette": self.palette,
             "path": self.path,
         }
+        for key in ("room", "x", "y"):
+            value = getattr(self, key)
+            if value is not None:
+                d[key] = value
+        return d
 
 
 class ManifestBuilder:

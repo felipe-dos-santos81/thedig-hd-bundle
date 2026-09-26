@@ -31,6 +31,7 @@ def test_la1_room_and_object_bitmaps():
     assert bmp.palette == PAL
     assert bmp.index == bytes(range(1, 17))
     assert bmp.transparent0 is False                    # RAW256 is opaque
+    assert (bmp.room, bmp.x, bmp.y) == (1, None, None)  # a backdrop has a room, no position
 
     # two strips: RAW256 (opaque) then ZIGZAG_VT6 (transparent) -> OR is True
     w = 16
@@ -51,17 +52,18 @@ def test_la1_room_and_object_bitmaps():
     bomp_data = bytes([(w - 1) << 1]) + bytes(range(1, w + 1))  # literal run of 8
     row = struct.pack("<H", len(bomp_data)) + bomp_data
     bomp = chunk(b"BOMP", bytes(2) + struct.pack("<HH", w, h) + bytes(4) + row)
-    imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, w, h))
+    imhd = chunk(b"IMHD", struct.pack("<IHHhhHH", 7, 63, 1, -16, 24, w, h))
     obim = chunk(b"OBIM", imhd + chunk(b"IM01", bomp))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, h, 0))
     errors = []
-    room = fx.la1_container(chunk(b"ROOM", rmhd + fx.palette_wrap(PAL) + obim))
+    room = fx.la1_container(chunk(b"ROOM", rmhd + fx.palette_wrap(PAL) + obim), room=5)
     bitmaps = list(L.iter_bitmaps(room, errors))
     assert errors == []
     assert len(bitmaps) == 1
     assert bitmaps[0].name == "obj063_01"
     assert bitmaps[0].index == bytes(range(1, 9))
     assert bitmaps[0].transparent0 is False
+    assert (bitmaps[0].room, bitmaps[0].x, bitmaps[0].y) == (5, -16, 24)  # IMHD x_pos is signed
 
 
 def test_la1_errors():

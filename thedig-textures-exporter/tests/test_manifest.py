@@ -87,6 +87,13 @@ def test_manifest_schema_counts_and_palette_sidecars(tmp_path):
     assert strip.size == (256, 1)
     assert strip.getpixel((7, 0)) == (7, 21, 49)
 
+    obj = AssetRecord(id="la1:obj063_01", kind="la1_bitmap", source="DIG.LA1", frame=None,
+                      name="obj063_01", width=8, height=4, has_alpha=True, palette=h,
+                      path="la1/obj063_01.png", room=3, x=-8, y=16).to_dict()
+    assert list(obj)[-4:] == ["path", "room", "x", "y"]
+    assert (obj["room"], obj["x"], obj["y"]) == (3, -8, 16)
+    assert "room" not in san_record(h, 0).to_dict()
+
 
 def test_png_writers(tmp_path):
     pal, index = make_pal(), make_index()

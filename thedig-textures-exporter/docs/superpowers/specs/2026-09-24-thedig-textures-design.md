@@ -186,6 +186,12 @@ pixel's RGB unchanged — the index is `0` for Byle cels, transparent SMAP `OBIM
 codec 1; `2` for NUT codec 44; and `255` for BOMP `OBIM` and CDAT/MajMin cels. A
 regeneration pipeline can group, condition, and trace every PNG from this file alone.
 
+Since 0.2.0 every entry whose `id` starts `la1:` also carries `"room"`: the LOFF
+room number of the `ROOM` it was decoded from. Every `la1:obj…` entry also carries
+`"x"` and `"y"`: its `IMHD` `x_pos` and `y_pos` (signed 16-bit, SCUMM v7 payload
+offsets 8 and 10), the native room position of the image's top-left pixel. These
+keys follow `path`; `akos:`, `san:` and `nut:` entries have none of them.
+
 ## 6. CLI
 
 ```

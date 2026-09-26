@@ -37,7 +37,7 @@ def obim_bomp_la1() -> bytes:
     row0 = struct.pack("<H", 3) + bytes([2, 255, 5])   # literal run -> [255, 5]
     row1 = struct.pack("<H", 3) + bytes([2, 6, 255])   # literal run -> [6, 255]
     bomp = chunk(b"BOMP", bytes(2) + struct.pack("<HH", w, h) + bytes(4) + row0 + row1)
-    imhd = chunk(b"IMHD", struct.pack("<IHHHHHH", 7, 63, 1, 0, 0, w, h))
+    imhd = chunk(b"IMHD", struct.pack("<IHHhhHH", 7, 63, 1, 40, 16, w, h))
     obim = chunk(b"OBIM", imhd + chunk(b"IM01", bomp))
     rmhd = chunk(b"RMHD", struct.pack("<IHHH", 7, w, h, 0))
     return fx.la1_container(chunk(b"ROOM", rmhd + fx.palette_wrap(PAL) + obim))
@@ -170,6 +170,8 @@ def test_extract_transparency_and_stale_errors(tmp_path):
                  "--only", "la1", "--jobs", "1"]) == 0
     asset = read_manifest(out)["assets"][0]
     assert asset["id"] == "la1:obj063_01" and asset["has_alpha"] is True
+    assert (asset["room"], asset["x"], asset["y"]) == (1, 40, 16)
+    assert list(asset)[-4:] == ["path", "room", "x", "y"]
     im = Image.open(out / asset["path"])
     assert im.mode == "RGBA" and im.size == (2, 2)
     assert im.getpixel((0, 0))[3] == 0 and im.getpixel((1, 1))[3] == 0
@@ -193,6 +195,7 @@ def test_extract_transparency_and_stale_errors(tmp_path):
                  "--only", "akos", "--jobs", "1"]) == 0
     asset = read_manifest(out)["assets"][0]
     assert asset["id"] == "akos:costume001_000" and asset["has_alpha"] is True
+    assert not {"room", "x", "y"} & set(asset)          # costume cels carry no placement
     im = Image.open(out / asset["path"])
     assert im.mode == "RGBA" and im.size == (2, 2)
     assert im.getpixel((0, 0))[3] == 0 and im.getpixel((1, 1))[3] == 0

@@ -22,7 +22,7 @@ the OR of the per-strip ``transpStrip`` flag across the image's strips.
 
 import struct
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from .bomp import bomp_decode_rows
 from .errors import DecodeError
@@ -58,6 +58,13 @@ class La1Bitmap:
     # 0 for a transparent SMAP strip (RMIM/OBIM), 255 for a BOMP OBIM object
     # sprite.
     transparent: int | None
+    # Where the bitmap lives in the game. Keyword-only, so AkosCel's positional
+    # fields still follow `transparent`: the LOFF room number of the ROOM it was
+    # decoded from, and for an OBIM image its IMHD x_pos/y_pos (signed native room
+    # pixels). None for AKOS cels; x and y None for room backdrops.
+    room: int | None = field(default=None, kw_only=True)
+    x: int | None = field(default=None, kw_only=True)
+    y: int | None = field(default=None, kw_only=True)
 
     @property
     def transparent0(self) -> bool:
@@ -75,6 +82,10 @@ def _le32(data: bytes, off: int) -> int:
 
 def _le16(data: bytes, off: int) -> int:
     return struct.unpack_from("<H", data, off)[0]
+
+
+def _les16(data: bytes, off: int) -> int:
+    return struct.unpack_from("<h", data, off)[0]
 
 
 def _is_tag(data: bytes, off: int) -> bool:
@@ -414,11 +425,13 @@ def _process_room(data: bytes, room_off: int, room: int, errors: list,
                     bmp = _decode_smap(data, smap, rw, rh, palette, transparent_color,
                                        im00, source, f"room{room:03d}", errors)
                     if bmp is not None:
-                        yield bmp
+                        yield replace(bmp, room=room)
         elif tag == b"OBIM":
             imhd = _find_child(data, c, size, b"IMHD")
             if imhd is not None:
                 obj_id = _le16(data, imhd + 8 + 4)
+                ox = _les16(data, imhd + 8 + 8)
+                oy = _les16(data, imhd + 8 + 10)
                 ow = _le16(data, imhd + 8 + 12)
                 oh = _le16(data, imhd + 8 + 14)
                 for itag, ic, _ in _children(data, c, c + size):
@@ -436,7 +449,7 @@ def _process_room(data: bytes, room_off: int, room: int, errors: list,
                         errors.append(DecodeError(source, ic, "unknown OBIM image container"))
                         bmp = None
                     if bmp is not None:
-                        yield bmp
+                        yield replace(bmp, room=room, x=ox, y=oy)
 
 
 def _iter_rooms(la1: bytes, source: str) -> Iterator[tuple[int, int]]:

@@ -124,7 +124,8 @@ def _stream(gen: Iterator, errors: list[dict]) -> Iterator:
 
 def _record(family: str, source: str, frame: int | None, name: str | None,
             width: int, height: int, has_alpha: bool, palette: bytes,
-            path: Path) -> dict:
+            path: Path, room: int | None = None, x: int | None = None,
+            y: int | None = None) -> dict:
     return {
         "id": _asset_id(family, source, frame, name),
         "kind": _KIND_OF[family],
@@ -136,6 +137,9 @@ def _record(family: str, source: str, frame: int | None, name: str | None,
         "has_alpha": has_alpha,
         "palette": palette_hash(palette),
         "path": path.as_posix(),
+        "room": room,
+        "x": x,
+        "y": y,
         "_palette_bytes": palette,
     }
 
@@ -234,7 +238,8 @@ def _extract_family(family: str, iterate, la1: bytes, source: str, out: Path,
                                            item.height, item.palette,
                                            item.transparent)
         records.append(_record(family, source, None, item.name, item.width,
-                               item.height, has_alpha, palette, rel))
+                               item.height, has_alpha, palette, rel,
+                               room=item.room, x=item.x, y=item.y))
     errors.extend(e.to_dict() for e in local)
 
 

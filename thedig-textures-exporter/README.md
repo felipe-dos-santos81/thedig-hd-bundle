@@ -39,7 +39,8 @@ schema is specified in
 [`docs/superpowers/specs/2026-09-24-thedig-textures-design.md`](docs/superpowers/specs/2026-09-24-thedig-textures-design.md)
 §5.1: `tool`, `tool_version`, `extracted_at`, `game_root` (sha256 over sorted
 path/size pairs), `counts`, and `assets[]` (`id`, `kind`, `source`, `frame`,
-`name`, `width`, `height`, `has_alpha`, `palette`, `path`).
+`name`, `width`, `height`, `has_alpha`, `palette`, `path`, `room` (LA1 rooms and
+objects), `x`, `y` (LA1 objects)).
 
 ## Requirements
 
