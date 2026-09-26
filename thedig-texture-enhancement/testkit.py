@@ -31,17 +31,9 @@ REAL_SRC = Path(os.environ.get("DIG_SRC")
 REAL_SKIP_ROOMS = (1, 86, 88, 93, 103, 104)
 
 
-def _real_corpus_loads():
-    try:
-        source_tree.load(REAL_SRC)
-        return True
-    except (source_tree.SourceError, OSError):
-        return False
-
-
 needs_real_corpus = unittest.skipUnless(
-    (REAL_SRC / "manifest.json").is_file() and _real_corpus_loads(),
-    "no loadable thedig-textures-exporter 0.2.0 output")
+    (REAL_SRC / "manifest.json").is_file(),
+    "no thedig-textures-exporter output at REAL_SRC (or DIG_SRC)")
 
 
 def real_rooms():

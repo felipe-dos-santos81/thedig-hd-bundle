@@ -1,5 +1,5 @@
 # Makefile for The Dig background regeneration kit
-# Pipeline: caption -> (edit rooms.yaml) -> batch -> review -> batch ... -> verify
+# Pipeline: caption -> (edit rooms.yaml) -> batch -> review -> objects -> review ... -> verify
 SERVICE = The Dig Background Regen
 
 VENV_DIR = .venv
@@ -17,8 +17,11 @@ strength ?=
 workflow ?=
 dedither ?=
 FORCE_ARG = $(if $(force),--force)
-ARGS = $(foreach r,$(room),--room $(r)) $(foreach o,$(object),--object $(o)) \
+ARGS = $(foreach r,$(room),--room $(r)) \
        $(if $(src),--src "$(src)") $(if $(dst),--dst "$(dst)") $(if $(obj_dst),--obj-dst "$(obj_dst)")
+# --object is accepted only by objects, review and verify: batch and caption used to
+# silently re-render or re-caption every room when the Makefile forwarded object=.
+OBJ_ARGS = $(foreach o,$(object),--object $(o))
 BATCH_ARGS = $(if $(filter 0,$(memcheck)),--no-memory-check) $(if $(strength),--match-strength $(strength)) \
              $(if $(workflow),--workflow $(workflow)) $(if $(dedither),--dedither $(dedither)) $(FORCE_ARG)
 
@@ -55,16 +58,16 @@ batch: install ## [STEP 2] Render via ComfyUI into data/rooms-ai; stop vLLM firs
 	./run_batch.sh batch $(ARGS) $(BATCH_ARGS)
 
 objects-dry-run: install ## [STEP 2c] Preview what objects would do (room=, object=, workflow=, force=1)
-	./run_batch.sh objects --dry-run $(ARGS) $(BATCH_ARGS)
+	./run_batch.sh objects --dry-run $(ARGS) $(OBJ_ARGS) $(BATCH_ARGS)
 
 objects: install ## [STEP 2b] Render room objects over their promoted rooms; stop vLLM first (room=, object=, workflow=, strength=, dedither=, memcheck=0, force=1)
-	./run_batch.sh objects $(ARGS) $(BATCH_ARGS)
+	./run_batch.sh objects $(ARGS) $(OBJ_ARGS) $(BATCH_ARGS)
 
-review: install ## [STEP 3] Review promoted rooms with vLLM into reviews.yaml (room=, force=1)
-	./run_batch.sh review $(ARGS) $(FORCE_ARG)
+review: install ## [STEP 3] Review promoted rooms with vLLM into reviews.yaml (room=, object=, force=1)
+	./run_batch.sh review $(ARGS) $(OBJ_ARGS) $(FORCE_ARG)
 
-verify: install ## [STEP 4] Audit data/rooms-ai against the manifest, the 4x rule and the attempts (room=)
-	./run_batch.sh verify $(ARGS)
+verify: install ## [STEP 4] Audit data/rooms-ai against the manifest, the 4x rule and the attempts (room=, object=)
+	./run_batch.sh verify $(ARGS) $(OBJ_ARGS)
 
 # ── Development ──────────────────────────────────────────────────────────────
 

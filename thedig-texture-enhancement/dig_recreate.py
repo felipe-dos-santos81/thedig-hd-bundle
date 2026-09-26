@@ -731,8 +731,12 @@ def render_object(args, workflow, obj, room, entry, corrections, cls):
             out = object_geometry.identical_output(room_hd, obj.x, obj.y, obj.width, obj.height)
             result = geometry_check.GeometryResult((0.0, 0.0), (), 1.0, (), (), ())
         else:
+            method = args.dedither
+            if method is None:
+                promoted = promoted_record(audit_dir(args.dst, room), record["room_sha256"])
+                method = (promoted or {}).get("dedither") or room_geometry.DEDITHER_METHOD
             inputs = object_geometry.object_inputs(room_hd, room_image, obj_image, obj.x, obj.y,
-                                                   args.dedither)
+                                                   method)
             style = entry.style or "painted"
             positive = render_prompt(entry.caption, entry.kind, corrections, OBJECT_NOTE,
                                      workflow.reference, style)
@@ -763,7 +767,7 @@ def render_object(args, workflow, obj, room, entry, corrections, cls):
             result = object_geometry.check_object(final, inputs)
             out = object_geometry.object_crop(final, inputs, obj.x, obj.y, obj.width, obj.height)
             record.update({"workflow": workflow.name, "seed": seed, "reference": "composite",
-                           "dedither": args.dedither, "context": list(inputs.box),
+                           "dedither": method, "context": list(inputs.box),
                            "match": {"rule": colour_match.RULE,
                                      "strength": args.match_strength}})
         if obj.has_alpha:
@@ -834,6 +838,11 @@ def cmd_objects(args):
     print(f"{len(objs)} object(s): render {len(renders)}, identical {len(work) - len(renders)}, "
           f"copy {len(copies)}, waiting {len(waiting)}, done {done}, stuck {len(stuck)}, "
           f"badplace {len(bad)}")
+    unreviewed = sum(1 for _, room, *_ in work if current_review(
+        reviews, room, latest_attempt(audit_dir(args.dst, room))) is None)
+    if unreviewed:
+        print(f"note: {unreviewed} object(s) are in rooms whose latest attempt is not reviewed "
+              "yet; if review rejects a room, its objects go stale and render again")
     for obj in bad:
         print(f"  BADPLACE {obj.key}: {obj.placement_error}", file=sys.stderr)
     if args.dry_run:
@@ -843,6 +852,10 @@ def cmd_objects(args):
         for obj, room, _, cls, corrections, obj_workflow in work:
             w, h = obj.out_size
             extras = [f"{len(corrections)} correction(s)"] if corrections else []
+            if cls == "render":
+                x0, y0, x1, y1 = object_geometry.context_box(
+                    obj.x, obj.y, obj.width, obj.height, room.width, room.height)
+                extras.append(f"context {x1 - x0}x{y1 - y0}")
             if obj_workflow is not workflow:
                 extras.append(f"fallback: {obj_workflow.name}")
             print(f"  {cls:9} {obj.key} in {room.key} -> {w}x{h}"
@@ -890,8 +903,12 @@ def cmd_objects(args):
             save_reviews(args.reviews, reviews)
             print(f"  rejected attempt {attempt}: " + "; ".join(result.issues), flush=True)
             if room_status(args.obj_dst, obj, reviews)[0] == "stuck":
-                if fallback_for(args.obj_dst, obj, workflow) is None:
+                fallback = fallback_for(args.obj_dst, obj, workflow)
+                if fallback is None:
                     stuck.append(obj)
+                else:
+                    print(f"  next run renders it through the fallback {fallback.name}",
+                          flush=True)
         for obj in stuck:
             print(object_stuck_line(obj), file=sys.stderr)
         print(f"done: promoted={promoted} rejected={rejected} failed={failed} "
@@ -1059,8 +1076,10 @@ def default_match_strength(environ=os.environ):
         raise UsageError(f"DIG_MATCH_STRENGTH: {error}") from error
 
 
-def render_options(p):
-    """The options of the two render stages, batch and objects."""
+def render_options(p, dedither_default=room_geometry.DEDITHER_METHOD):
+    """The options of the two render stages, batch and objects. `objects` passes
+    dedither_default=None: an object left to default picks up its room's own
+    promoted attempt's de-dither method instead of always the constant."""
     p.add_argument("--dry-run", action="store_true",
                    help="print the plan without contacting ComfyUI or writing files")
     p.add_argument("--no-memory-check", action="store_true",
@@ -1075,9 +1094,15 @@ def render_options(p):
                    default=default_workflow(), metavar="NAME",
                    help="render workflow: " + ", ".join(sorted(comfy_client.WORKFLOWS))
                         + " (default: %(default)s, or DIG_WORKFLOW)")
-    p.add_argument("--dedither", choices=room_geometry.DEDITHER_METHODS,
-                   default=room_geometry.DEDITHER_METHOD,
-                   help="how the guide smooths the source's dithering (default: %(default)s)")
+    if dedither_default is None:
+        p.add_argument("--dedither", choices=room_geometry.DEDITHER_METHODS, default=None,
+                       help="how the guide smooths the source's dithering (default: the "
+                            "room's own promoted attempt's method, else "
+                            f"{room_geometry.DEDITHER_METHOD})")
+    else:
+        p.add_argument("--dedither", choices=room_geometry.DEDITHER_METHODS,
+                       default=dedither_default,
+                       help="how the guide smooths the source's dithering (default: %(default)s)")
 
 
 def build_parser():
@@ -1095,12 +1120,14 @@ def build_parser():
                        help="object output tree (default: %(default)s, or DIG_OBJ_DST)")
         p.add_argument("--room", type=int, action="append", metavar="N",
                        help="process room N only (repeatable)")
-        p.add_argument("--object", action="append", metavar="KEY",
-                       help="process object KEY (objNNN_SS) only (repeatable)")
         p.add_argument("--rooms-file", type=Path, default=ROOMS_FILE,
                        help="rooms file (default: %(default)s, or DIG_ROOMS)")
         p.add_argument("--reviews", type=Path, default=REVIEWS_FILE,
                        help="reviews file (default: %(default)s, or DIG_REVIEWS)")
+
+    def object_option(p):
+        p.add_argument("--object", action="append", metavar="KEY",
+                       help="process object KEY (objNNN_SS) only (repeatable)")
 
     caption = sub.add_parser("caption", help="write captions into rooms.yaml with the local vLLM")
     common(caption)
@@ -1115,12 +1142,14 @@ def build_parser():
 
     objects = sub.add_parser("objects", help="render room objects over their promoted rooms")
     common(objects)
-    render_options(objects)
+    object_option(objects)
+    render_options(objects, dedither_default=None)
     objects.set_defaults(func=cmd_objects)
 
     review = sub.add_parser("review", help="compare promoted rooms with their sources through "
                                            "the local vLLM")
     common(review)
+    object_option(review)
     review.add_argument("--force", action="store_true",
                         help="review rooms whose latest attempt was already reviewed")
     review.set_defaults(func=cmd_review)
@@ -1128,6 +1157,7 @@ def build_parser():
     verify = sub.add_parser("verify", help="audit the output tree against the manifest, the 4x "
                                            "rule and the attempt records")
     common(verify)
+    object_option(verify)
     verify.set_defaults(func=cmd_verify)
     return ap
 

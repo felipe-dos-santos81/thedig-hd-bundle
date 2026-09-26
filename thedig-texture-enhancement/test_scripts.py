@@ -26,6 +26,8 @@ class MakeTests(unittest.TestCase):
             ("objects", "room=1", "object=obj010_02", "force=1"):
                 "./run_batch.sh objects --room 1 --object obj010_02 --force",
             ("objects-dry-run",): "./run_batch.sh objects --dry-run",
+            ("batch", "object=obj010_02"): "./run_batch.sh batch",
+            ("verify", "object=obj010_02"): "./run_batch.sh verify --object obj010_02",
             ("server",): "./run_server.sh",
         }
         for args, expected in cases.items():

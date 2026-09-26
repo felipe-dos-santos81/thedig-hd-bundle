@@ -23,9 +23,11 @@ overrides it). Each folder has its own README and Makefile.
 
 ## Game data
 
-Nothing extracted or generated is committed: `out/`, `data/` and
-`reviews.yaml` are gitignored. The art is LucasArts/Disney copyright; do not
-redistribute it.
+Extraction output and generated art are gitignored (`out/`, `data/` and
+`reviews.yaml`), except three first-frame proof images the exporter's decoder
+proofs keep committed:
+`thedig-textures-exporter/docs/proofs/first-frames/{PIGOUT,SQ1,SQ10}/00000.png`.
+The art is LucasArts/Disney copyright; do not redistribute it.
 
 ## Design
 

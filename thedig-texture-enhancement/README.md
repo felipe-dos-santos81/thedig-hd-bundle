@@ -47,15 +47,23 @@ never run together (GB10 unified memory, as in Atlantis).
    whose output is missing or whose latest attempt was rejected, and writes
    each `skip` room as a nearest-neighbour 4x. On exit, even after a failure,
    it frees ComfyUI's models so vLLM can start.
-4. **`make objects`** (ComfyUI up, after `batch`) classifies every object of
-   the selected rooms and repaints the ones that differ from the room beneath
-   them, over each room's promoted render.
-5. **`make review`** (vLLM up) judges every promoted room whose latest
-   attempt is unreviewed, then every promoted `render` object whose latest
-   attempt is unreviewed, and writes `reviews.yaml`.
-6. **`make batch` and `make objects` again** redo only the rejected rooms and
-   objects, with the next seed and the issues as corrections. Repeat 5 and 6.
-7. **`make verify`** audits `data/rooms-ai/` and `data/objects-ai/`.
+4. **`make review`** (vLLM up) judges every promoted room whose latest
+   attempt is unreviewed and writes `reviews.yaml`; with no object rendered
+   yet, this pass judges rooms only.
+5. **Repeat `make batch` and `make review` until the rooms settle** (no more
+   rejections). Painting an object over a room a later review rejects would
+   throw the object's render away the moment the room re-renders (`stale`),
+   so don't run `objects` before its room is settled.
+6. **`make objects`** (ComfyUI up, once the selected rooms have settled)
+   classifies every object of those rooms and repaints the ones that differ
+   from the room beneath them, over each room's promoted render.
+7. **`make review`** again: rooms already reviewed are skipped, so this pass
+   now judges every promoted `render` object whose latest attempt is
+   unreviewed.
+8. **Repeat `make objects` and `make review`** until the objects settle too,
+   redoing only the rejected ones, with the next seed and the issues as
+   corrections.
+9. **`make verify`** audits `data/rooms-ai/` and `data/objects-ai/`.
 
 `make dry-run` and `make objects-dry-run` print what `batch` and `objects`
 would do (windows, wraparound, margins, corrections, classification) without
@@ -245,9 +253,10 @@ data/objects-ai/.quality/objNNN_SS/
 
 `room="1 29 58"` and `object="obj010_01 obj010_02"` select by number or key
 (repeatable); every stage target also takes `src=DIR`, `dst=DIR` and
-`obj_dst=DIR`. `--object` is accepted by every stage but only `objects`,
-`review` and `verify` act on it; passed alone (no `room=`), `review` and
-`verify` touch only the named objects, not any room. Environment overrides:
+`obj_dst=DIR`. `--object` is accepted only by `objects`, `review` and
+`verify` (`caption` and `batch` reject it, so `object=` alone never
+re-captions or re-renders every room); passed alone (no `room=`), `review`
+and `verify` touch only the named objects, not any room. Environment overrides:
 `DIG_SRC`, `DIG_DST`, `DIG_OBJ_DST`, `DIG_ROOMS`, `DIG_REVIEWS`,
 `DIG_WORKFLOW`, `DIG_MATCH_STRENGTH`, `COMFY_URL`, `COMFY_DIR`,
 `VLM_BASE_URL`, `VLM_MODEL`, `VLM_API_KEY`.

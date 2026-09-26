@@ -20,6 +20,14 @@ build plan `docs/superpowers/plans/2026-09-26-thedig-regeneration.md`.
 
 `verify` audits both output trees.
 
+Run order: `batch` → `review` (judges rooms; no object exists yet) → repeat
+`batch`/`review` until the rooms settle (no more rejections) → `objects` →
+`review` again (rooms are already reviewed, so this pass judges the render
+objects) → repeat `objects`/`review` → `verify`. `objects` paints over each
+room's *current* promoted output; running it before its room's review has
+settled risks a later rejection re-rendering the room and staling every
+object painted over it (see below).
+
 Rules that must survive any change:
 
 - **The source is thedig-textures-exporter's output, at tool version 0.2.0 or
@@ -128,7 +136,11 @@ Per room (`dig_recreate.render_room`):
    is an L; a first-row or first-column window is painted whole on that
    axis), `comfy_client.render_window`, `paste_window` (from the stitch
    origin: the middle of each overlap, or the window's own edge with none).
-4. A wraparound: `seam_inputs`, `render_window`, `apply_seam`.
+4. A wraparound: `seam_inputs`, `render_window`, `apply_seam`. The stitched
+   canvas is saved as `attempt-N.png` here, before it is cropped: for a
+   padded room (see step 1), `attempt-N.png` is the **padded** canvas, 4x
+   the padded height, not the room's 4x size; the promoted output (after
+   step 5) is exactly 4x.
 5. `finish_room`: crop the padded canvas back to exactly the room's 4x size,
    `colour_match.match` toward the guide (`--match-strength`; over opaque
    pixels only for an RGBA room), then `apply_fixups` (the wraparound's

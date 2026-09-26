@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run The Dig regeneration driver: forwards every argument to dig_recreate.py
-# (caption | batch | review | verify, plus their options). Prefers the project
+# (caption | batch | objects | review | verify, plus their options). Prefers the project
 # venv (.venv, made by make install), then PYTHON, then python3; the interpreter
 # needs Pillow, PyYAML and numpy.
 set -euo pipefail

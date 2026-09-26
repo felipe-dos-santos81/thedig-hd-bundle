@@ -182,6 +182,12 @@ class CaptionTests(DriverFixture):
         self.assertIn("vLLM is not serving", err)
         vlm.caption.assert_not_called()
 
+    def test_object_is_not_a_caption_option(self):
+        # F1: caption used to re-caption every room when the Makefile forwarded object=.
+        with self.assertRaises(SystemExit) as cm:
+            self.run_cli("caption", "--object", "obj010_02")
+        self.assertEqual(cm.exception.code, 2)
+
     def test_a_failed_caption_does_not_stop_the_others(self):
         def caption(images, *a):
             if len(images) == 3:
@@ -609,6 +615,13 @@ class BatchTests(DriverFixture):
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
 
+    def test_object_is_not_a_batch_option(self):
+        # F1: --object re-renders every room when batch's ARGS forwarded it; it is now
+        # registered only on objects, review and verify.
+        with self.assertRaises(SystemExit) as cm:
+            self.batch("--object", "obj010_02")
+        self.assertEqual(cm.exception.code, 2)
+
 
 class ObjectTests(DriverFixture):
     def setUp(self):
@@ -633,6 +646,10 @@ class ObjectTests(DriverFixture):
         code, out, err, stub = self.objects()
         self.assertEqual(code, 0, err)
         self.assertIn("render 3, identical 1, copy 1, waiting 0, done 0, stuck 0, badplace 1", out)
+        # F2: rooms 1 and 2 were rendered in setUp without review, so their 4
+        # queued objects (obj010_01, obj010_02, obj011_01, obj014_01) are noted.
+        self.assertIn("note: 4 object(s) are in rooms whose latest attempt is not reviewed yet; "
+                      "if review rejects a room, its objects go stale and render again", out)
         self.assertIn("BADPLACE obj013_01", err)
         names = sorted(c.kwargs["name"] for c in stub.render.call_args_list)
         self.assertEqual(names, ["obj010_02_a1-object", "obj011_01_a1-object",
@@ -679,6 +696,28 @@ class ObjectTests(DriverFixture):
         self.assertIn(GEOMETRY_CORRECTION, stub.render.call_args.kwargs["positive"])
         self.assertTrue(self.object_record("obj010_02", 2)["promoted"])
 
+    def test_objects_use_their_rooms_dedither(self):
+        # F5: an object left to default (objects' --dedither defaults to None) picks up
+        # its room's own promoted attempt's de-dither, not the room_geometry constant.
+        with testkit.comfy_stub(comfy_dir=self.comfy_dir, render=testkit.fake_render()):
+            code, _, err = self.run_cli("batch", "--room", "1", "--force", "--dedither", "none")
+        self.assertEqual(code, 0, err)
+        self.objects("--object", "obj010_02", "--force")
+        self.assertEqual(self.object_record("obj010_02")["dedither"], "none")
+
+    def test_a_stuck_object_gets_one_attempt_through_the_fallback(self):
+        shifted = testkit.fake_render(testkit.shift_right)
+        extra = ("--object", "obj010_02", "--workflow", "qwen-image-2.1-i2i")
+        for _ in range(a.MAX_ATTEMPTS):
+            code, out, err, _ = self.objects(*extra, render=shifted)
+        self.assertIn("next run renders it through the fallback qwen-image-2.1-i2i-faithful", out)
+        self.assertNotIn("STUCK", err)
+        code, out, err, _ = self.objects(*extra)
+        self.assertEqual(code, 0, err)
+        record = self.object_record("obj010_02", a.MAX_ATTEMPTS + 1)
+        self.assertEqual(record["workflow"], "qwen-image-2.1-i2i-faithful")
+        self.assertTrue(record["promoted"])
+
     def test_skip_objects_are_copied_not_rendered(self):
         testkit.write_rooms(self.rooms_file, skip_objects={1: ["obj010_02"]})
         _, out, _, stub = self.objects("--object", "obj010_02")
@@ -701,7 +740,7 @@ class ObjectTests(DriverFixture):
     def test_dry_run_lists_without_rendering(self):
         code, out, _, stub = self.objects("--dry-run")
         self.assertEqual((code, stub.render.call_count, stub.is_up.call_count), (0, 0, 0))
-        self.assertIn("render    obj010_02 in room_001 -> 192x128", out)
+        self.assertIn("render    obj010_02 in room_001 -> 192x128  context 128x128", out)
         self.assertIn("identical obj010_01 in room_001", out)
         self.assertFalse(self.obj_dst.exists())
 
