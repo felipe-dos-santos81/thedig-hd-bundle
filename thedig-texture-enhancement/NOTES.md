@@ -78,3 +78,40 @@ Decisions (the user's, from the review pages):
   workflow.
 - Read every caption against its room image before a batch, and set `style`
   by hand where MEDIUM hedges.
+
+## Object spike (2026-09-26, GB10)
+
+The 20 objects of the six spike rooms, rendered over their promoted spike
+renders (`--reviews` pointed at a spike-only file, so the kit's `reviews.yaml`
+did not gate them), then the 14 states of `obj775` (a crystal tip in room 100
+that brightens from dark to lit) over room 100, captioned for this spike and
+promoted at denoise 1.0 (63 s, shift 0.08 px, edge 1.0). Every object is class
+`render`; none is identical. An object render takes about 14 s (45 s at most).
+
+| Variant | Objects | Promoted | Notes |
+|---|---|---|---|
+| full caption in the object prompt | 11 in rooms 4, 11, 43, 60 | 11 | incl. the 280x144 `obj347` and alpha sprites |
+| same | 9 in rooms 2, 27 | 2 | the render painted caption objects into the mask |
+| room-wide caption (`room_wide_caption`) | the 7 rejected | 7 | on attempt 2 |
+| full caption | 14 states of `obj775` | 14 | all on attempt 1 |
+
+- **Caption leak into objects:** with the room's LAYOUT and OBJECTS in the
+  prompt, `obj042_01` got an asteroid in the cargo bay, `obj044_01` became an
+  asteroid, `obj231_02` got the crystal cone and `obj234_01` a purple diamond
+  from room 27's caption. The one-window painted rooms' objects passed because
+  their captions only name what is already around them. Keeping only SCENE,
+  MEDIUM, LIGHTING, PALETTE and TEXT fixed all four, even in room 2, whose
+  remaining sections still name the asteroid.
+- **Multi-state objects:** `obj775`'s 14 independently rendered states keep the
+  crystal's outline and position in every frame and follow the source's
+  brightening; the surface texture shimmers slightly from frame to frame, and
+  the last three states have a soft smear on the lower facet.
+
+Decisions (the user's):
+
+- Object prompts carry only the room-wide caption sections (option b; objects
+  stay at denoise 1.0). The rejected alternative: render objects through the
+  0.9 workflow.
+- Flicker is acceptable: no chained states.
+- Before the full run, empty the kit's `reviews.yaml`: it still holds the room
+  spike's geometry rejections of rooms 2 and 27.

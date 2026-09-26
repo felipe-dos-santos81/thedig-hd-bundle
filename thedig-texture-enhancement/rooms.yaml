@@ -583,7 +583,51 @@ room_099:
   caption: ''
 room_100:
   kind: scene
-  caption: ''
+  style: rendered
+  caption: >-
+    SCENE: Interior of a dark, cavernous space. The architecture is organic and rocky, defined by large mineral formations rather than constructed walls or ceilings. The atmosphere is dim, cold, and enclosed.
+
+
+    MEDIUM: Pre-rendered 3D. Visible evidence includes the smooth, faceted geometry of the crystals, hard CGI shading on their flat surfaces, and the uniform, slightly grainy texture applied to the ground plane.
+
+
+    VIEW: A slightly raised viewpoint looking across the crystal formation, which fills the left two-thirds of the frame.
+
+
+    LAYOUT:
+
+    Foreground (bottom): A rough, uneven rocky floor spanning the full width (0-1).
+
+    Middle ground (left-center): Five large, vertical crystal columns rising from the ground, three at the back and two in front, joined by chains of small crystals that meet at a hub near the centre (x 0.35, y 0.55).
+
+    Background (top): Dark blue rock that fades darker toward the top of the frame.
+
+    Foreground (lower right): A flat rock ledge with three dark, circular holes.
+
+
+    OBJECTS:
+
+    Five primary crystal columns dominate the left two-thirds of the frame. They are closed, solid monoliths with pointed tops.
+
+    Back row: at horizontal 0.08, 0.25 and 0.58, around vertical 0.25.
+
+    Front row: at horizontal 0.22 (vertical 0.65) and 0.55 (vertical 0.55).
+
+    Chains of small crystals run from the base of each column to a hub near the centre (0.35, 0.55); smaller crystal fragments surround each base.
+
+    Three distinct, dark circular holes lie roughly in a row in a flat rock ledge at the lower right, at horizontal 0.72, 0.80 and 0.92, around vertical 0.8.
+
+
+    LIGHTING: The scene is lit by a single, soft source from the front-left, creating specular highlights on the left-facing facets of the crystals. The right side of the crystals falls into deep shadow. The background rock is barely lit and darkens toward the top. Shadows are cast directly downward and slightly to the right.
+
+
+    PALETTE: Dominant colors are desaturated cyan, slate blue, and charcoal grey. The background is very dark blue rock. Highlights are pale, icy blue.
+
+
+    TEXT: None.
+
+
+    INVARIANTS: The arrangement of the five crystal columns and the small-crystal chains joining them at the central hub must be maintained. The lit foreground fades into dark rock toward the top. The three circular holes stay in their ledge at the lower right. No people are present.
 room_101:
   kind: scene
   caption: ''
