@@ -748,6 +748,22 @@ class ObjectTests(DriverFixture):
         code, out, _ = self.run_cli("verify", "--object", "obj010_02")
         self.assertIn("UNRECORDED obj010_02", out)
 
+    def test_a_missing_object_guide_fails_only_its_own_room(self):
+        self.objects()
+        (self.obj_dst / ".quality" / "obj010_02" / "attempt-1.tiles" / "object.guide.png").unlink()
+
+        def review(items, overview, style, *rest):
+            return {k: {"accepted": True, "issues": []} for k, _, _ in items}
+
+        with testkit.vlm_stub(review=lambda *a_, **k: {"accepted": True, "issues": []},
+                              objects=review, free=None):
+            code, out, err = self.run_cli("review")
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR reviewing room_001's objects", err)
+        self.assertTrue((self.obj_dst / ".quality" / "obj010_02"
+                         / "attempt-1.review-error.txt").is_file())
+        self.assertIn("obj014_01", load_reviews(self.reviews))
+
 
 class ReviewTests(DriverFixture):
     def setUp(self):

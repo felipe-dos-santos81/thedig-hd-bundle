@@ -981,18 +981,18 @@ def cmd_review(args):
     for number, todo in sorted(by_room.items()):
         room = rooms_by_number[number]
         entry = entries[room.key]
-        with Image.open(args.dst / room.out_name) as im:
-            overview = im.convert("RGB")
         for start in range(0, len(todo), OBJECT_REVIEW_BATCH):
             chunk = todo[start:start + OBJECT_REVIEW_BATCH]
             print(f"review {len(chunk)} object(s) of {room.key}", flush=True)
-            items = []
-            for obj, attempt in chunk:
-                audit = audit_dir(args.obj_dst, obj)
-                with Image.open(audit / f"attempt-{attempt}.tiles" / "object.guide.png") as g, \
-                        Image.open(audit / f"attempt-{attempt}.png") as r:
-                    items.append((obj.key, g.convert("RGB"), r.convert("RGB")))
             try:
+                with Image.open(args.dst / room.out_name) as im:
+                    overview = im.convert("RGB")
+                items = []
+                for obj, attempt in chunk:
+                    audit = audit_dir(args.obj_dst, obj)
+                    with Image.open(audit / f"attempt-{attempt}.tiles" / "object.guide.png") as g, \
+                            Image.open(audit / f"attempt-{attempt}.png") as r:
+                        items.append((obj.key, g.convert("RGB"), r.convert("RGB")))
                 verdicts = review_objects(items, overview, entry.style or "painted",
                                           comfy_client.http_json, VLM_BASE_URL, VLM_MODEL,
                                           VLM_API_KEY)
