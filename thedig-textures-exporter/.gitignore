@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# Extracted assets
+out/
+
+# Oracle build artifacts
+vendor/san-oracle/san-oracle
+vendor/san-oracle/*_core.cpp
+
+# Agent scratch workspace
+.superpowers/
+
+# macOS
+.DS_Store

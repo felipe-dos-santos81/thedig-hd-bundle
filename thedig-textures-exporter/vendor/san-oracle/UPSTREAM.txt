@@ -1,0 +1,17 @@
+scummvm commit: ac3ab2250a4d8d82fe22c1d784a3d9c490342293
+verbatim upstream, GPL-3.0-or-later:
+639e5a04587a45bde127a528bc50f416f14149a9c9df438aeba6c43663d018b1  ./engines/scumm/smush/codec37.cpp
+06c5ec4a84bde3b549ed79dd34967b828faca4dbd43568b8987bf5fcc675a982  ./engines/scumm/smush/smush_player.cpp
+e01654426a8f8bb1447fb5228673c25388901436c1939f2975c754d6f3528e16  ./engines/scumm/smush/codec37.h
+186b9aec622a63a0ed209b8a20a36833a135f1941d43a91366dccd18537a6dab  ./engines/scumm/smush/codec1.cpp
+579e894a6bdfa2bf07c624e8731f071ec9db0c8516ead797674a495d01f9ef9d  ./engines/scumm/bomp.h
+272f2e547f37d6c1316d28ba0fc3a8259ca51c07297871e95ccc7f8ab91c8b08  ./engines/scumm/nut_renderer.cpp
+b69c89ade8c95635b7ed6bd455000070756e2a52bda89c05c40ab84ccbca8a71  ./engines/scumm/bomp.cpp
+9e02f8c814702cba46636dbe47a99d76275e6efbc1c31558f1fe65dd5ba1aa86  ./engines/scumm/gfx.cpp
+43e299c9ec349f5ae6d798b0a3eba17bba08242f08e86695a15718637b9c94fd  ./engines/scumm/gfx.h
+a7804f2574d10003c29e8435454152efacf515a55fa1b6f189e8dc305c562e41  ./engines/scumm/akos.cpp
+781db3f86e66c693ee29bda0265fcec87ed14d9a03b0ae804a43d9bfd396ac83  ./engines/scumm/akos.h
+7901e35060a7bcaee23e2f8ee1b5cab6e4454cde38e8bddb39cf13abcfabb698  ./engines/scumm/actor.h
+1522bc414ddf62d68ac30b2ddd0bb01f1d7843c3a6d6d3557cc676e456535434  ./engines/scumm/costume.h
+23d2467e3dcfeca5eddc7942977115d4ba42f3b063a83b04ded75120385a3ea0  ./engines/scumm/base-costume.cpp
+d88efdfda72f9eae25d9a3ca6dd1e1a9e2a85bd26c77167136a3cf7e9b6a7b45  ./engines/scumm/base-costume.h
