@@ -74,14 +74,17 @@ class VerifyTests(DriverFixture):
             code, out, _ = self.run_cli("verify")
             self.assertEqual(code, 1)
             self.assertIn("MISSING    room_001", out)
-            self.assertIn("verify: 4 room(s), 4 problem(s)", out)
-        with self.subTest("everything present"):
+            self.assertIn("verify: 4 room(s), 6 object(s), 10 problem(s)", out)
+        with self.subTest("rooms present"):
             for number in (1, 2, 3):
                 self.write_output(number)
             self.write_output(4, record=False)          # a skip room needs no record
+            # No object has been rendered in this fixture, so verify still reports
+            # every object's absence; only the rooms themselves are complete here.
             code, out, _ = self.run_cli("verify")
-            self.assertEqual(code, 0, out)
-            self.assertIn("verify: 4 room(s), 0 problem(s)", out)
+            self.assertEqual(code, 1, out)
+            self.assertNotRegex(out, r"(?m)^\S+ +room_\d{3}\b")
+            self.assertIn("verify: 4 room(s), 6 object(s), 6 problem(s)", out)
 
     def test_problems_are_named(self):
         self.write_output(1, size=(1280, 575))
@@ -101,7 +104,7 @@ class VerifyTests(DriverFixture):
         code, out, _ = self.run_cli("verify", "--room", "1")
         self.assertEqual(code, 1)
         self.assertIn("UNRECORDED room_001", out)
-        self.assertIn("verify: 1 room(s), 1 problem(s)", out)
+        self.assertIn("verify: 1 room(s), 4 object(s), 5 problem(s)", out)
 
     def test_verify_refuses_bad_arguments(self):
         with self.subTest("an unknown room"):
@@ -384,7 +387,10 @@ class BatchTests(DriverFixture):
             self.assertEqual(code, 0, err)
             self.assertIn("done: promoted=3 rejected=0 failed=0 copied=1", out)
             mocks.freed.assert_called_once()
-            self.assertEqual(self.run_cli("verify")[0], 0)
+            # Every room passed verify; its objects were never rendered here (see
+            # ObjectTests), so they still report as problems.
+            _, verify_out, _ = self.run_cli("verify")
+            self.assertNotRegex(verify_out, r"(?m)^\S+ +room_\d{3}\b")
         with self.subTest("a second run has nothing to do"):
             self.setUp()
             self.batch()
@@ -576,7 +582,10 @@ class BatchTests(DriverFixture):
         code, out, _, _ = self.batch("--room", "2")
         self.assertEqual(code, 0)
         self.assertIn("promoted attempt 2", out)
-        self.assertEqual(self.run_cli("verify", "--room", "2")[0], 0)
+        # room_002 itself is complete; its one object (obj014_01) was never
+        # rendered here, so it still reports as a problem.
+        _, verify_out, _ = self.run_cli("verify", "--room", "2")
+        self.assertNotIn("room_002", verify_out)
 
     def test_a_flat_room_marked_scene_fails_cleanly(self):
         # Review Focus: a hand edit gives a placeholder a scene kind.
@@ -695,6 +704,42 @@ class ObjectTests(DriverFixture):
         self.assertIn("render    obj010_02 in room_001 -> 192x128", out)
         self.assertIn("identical obj010_01 in room_001", out)
         self.assertFalse(self.obj_dst.exists())
+
+    def test_review_judges_rendered_objects_per_room(self):
+        self.objects()
+        seen = []
+
+        def review(items, overview, style, *rest):
+            seen.append(sorted(k for k, _, _ in items))
+            return {"obj010_02": {"accepted": False, "issues": ["a halo around the lever"]},
+                    "obj011_01": {"accepted": True, "issues": []}}
+
+        with testkit.vlm_stub(review=lambda *a_, **k: {"accepted": True, "issues": []},
+                              objects=review, free=None):
+            code, out, err = self.run_cli("review")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(seen, [["obj010_02", "obj011_01"], ["obj014_01"]])
+        reviews = load_reviews(self.reviews)
+        self.assertEqual((reviews["obj010_02"].accepted, reviews["obj011_01"].accepted),
+                         (False, True))
+        self.assertNotIn("obj014_01", reviews)                         # no verdict: unreviewed
+        self.assertNotIn("obj010_01", reviews)                         # identical: never reviewed
+        _, _, _, stub = self.objects("--object", "obj010_02")
+        self.assertIn("a halo around the lever", stub.render.call_args.kwargs["positive"])
+
+    def test_verify_audits_objects(self):
+        self.objects()
+        code, out, _ = self.run_cli("verify")
+        self.assertEqual(code, 1)
+        self.assertIn("BADPLACE   obj013_01", out)
+        self.assertNotIn("obj010_02", out)
+        self.batch_rooms("--force", transform=lambda im: Image.eval(im, lambda v: min(255, v + 3)))
+        code, out, _ = self.run_cli("verify", "--room", "1")
+        self.assertIn("STALE      obj010_02", out)
+        Image.new("RGB", (32, 32)).save(self.obj_dst / "obj011_01.png")
+        code, out, _ = self.run_cli("verify", "--object", "obj011_01")
+        self.assertIn("WRONGSIZE  obj011_01", out)
+        self.assertNotIn("room_", out)
 
 
 class ReviewTests(DriverFixture):

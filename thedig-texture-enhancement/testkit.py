@@ -231,13 +231,13 @@ _UNSET = object()
 
 
 @contextlib.contextmanager
-def vlm_stub(*, serving=True, caption=None, review=None, free=_UNSET):
+def vlm_stub(*, serving=True, caption=None, review=None, objects=None, free=_UNSET):
     """Patch the vLLM side of `caption` and `review`: dig_recreate.vlm_is_serving
-    and, when given, a side_effect callable for dig_recreate.caption_room or
-    review_room. Pass `free` (a side_effect, or None for a plain stub) to also
-    patch comfy_client.free_models, which only `review` calls.
+    and, when given, a side_effect callable for dig_recreate.caption_room,
+    review_room or review_objects. Pass `free` (a side_effect, or None for a
+    plain stub) to also patch comfy_client.free_models, which only `review` calls.
 
-    Yields the mocks: serving, and caption, review and freed when requested.
+    Yields the mocks: serving, and caption, review, objects and freed when requested.
     """
     with contextlib.ExitStack() as stack:
         mocks = SimpleNamespace(
@@ -246,6 +246,9 @@ def vlm_stub(*, serving=True, caption=None, review=None, free=_UNSET):
             mocks.caption = stack.enter_context(patch.object(a, "caption_room", side_effect=caption))
         if review is not None:
             mocks.review = stack.enter_context(patch.object(a, "review_room", side_effect=review))
+        if objects is not None:
+            mocks.objects = stack.enter_context(
+                patch.object(a, "review_objects", side_effect=objects))
         if free is not _UNSET:
             mocks.freed = stack.enter_context(
                 patch.object(comfy_client, "free_models", side_effect=free))

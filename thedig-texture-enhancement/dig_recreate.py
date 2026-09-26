@@ -41,8 +41,9 @@ import geometry_check
 import object_geometry
 import room_geometry
 import source_tree
-from prompts import (GEOMETRY_CORRECTION, OBJECT_NOTE, SEAM_NOTE, caption_room, medium_style,
-                     negative_prompt, render_prompt, review_room, vlm_is_serving, window_note)
+from prompts import (GEOMETRY_CORRECTION, OBJECT_NOTE, SEAM_NOTE, OBJECT_REVIEW_BATCH,
+                     caption_room, medium_style, negative_prompt, render_prompt, review_objects,
+                     review_room, vlm_is_serving, window_note)
 from rooms_file import (Review, RoomsFileError, check_coverage, load_reviews, load_rooms,
                         save_reviews, save_rooms)
 from source_tree import SourceError
@@ -168,8 +169,38 @@ def alpha_matches(path, source):
 
 # ---- verify -----------------------------------------------------------------
 
+def verify_object(args, obj, entries, rooms):
+    """(code, detail) for an object output that breaks the contract, or None."""
+    if obj.placement_error:
+        return "BADPLACE", obj.placement_error
+    dst = args.obj_dst / obj.out_name
+    if not dst.is_file():
+        return "MISSING", ""
+    info = image_info(dst)
+    if info is None:
+        return "UNREADABLE", ""
+    if info[0] != obj.out_size:
+        want = obj.out_size
+        return "WRONGSIZE", f"is {info[0][0]}x{info[0][1]}, expected {want[0]}x{want[1]}"
+    if info[1] != obj.mode:
+        return "WRONGMODE", f"is {info[1]}, expected {obj.mode}"
+    if obj.has_alpha and not alpha_matches(dst, source_tree.open_rgba(args.src, obj)):
+        return "WRONGALPHA", "the alpha is not the source's, 4x nearest"
+    room = rooms[obj.room]
+    entry = entries[room.key]
+    if entry.kind == "skip" or obj.key in entry.skip_objects:
+        return None
+    record = promoted_record(audit_dir(args.obj_dst, obj), source_tree.file_sha256(dst))
+    if record is None:
+        return "UNRECORDED", f"no attempt record promoted this file - run: make objects object={obj.key} force=1"
+    room_out = args.dst / room.out_name
+    if not room_out.is_file() or record.get("room_sha256") != source_tree.file_sha256(room_out):
+        return "STALE", f"painted over an older {room.key} - run: make objects object={obj.key}"
+    return None
+
+
 def cmd_verify(args):
-    rooms = selection(args)
+    rooms = [] if args.object and not args.room else selection(args)
     entries = load_entries(args)
     bad = 0
     for room in rooms:
@@ -194,7 +225,16 @@ def cmd_verify(args):
             continue
         bad += 1
         print(f"{code:10} {room.key}" + (f"  {detail}" if detail else ""))
-    print(f"verify: {len(rooms)} room(s), {bad} problem(s)")
+    by_number = {room.number: room for room in args.source.rooms}
+    objs = object_selection(args)
+    for obj in objs:
+        problem = verify_object(args, obj, entries, by_number)
+        if problem is None:
+            continue
+        bad += 1
+        code, detail = problem
+        print(f"{code:10} {obj.key}" + (f"  {detail}" if detail else ""))
+    print(f"verify: {len(rooms)} room(s), {len(objs)} object(s), {bad} problem(s)")
     return 1 if bad else 0
 
 
@@ -877,7 +917,7 @@ def review_images(src, room, output):
 
 
 def cmd_review(args):
-    rooms = selection(args)
+    rooms = [] if args.object and not args.room else selection(args)
     entries = load_entries(args)
     code = vlm_preflight()
     if code is not None:
@@ -919,6 +959,64 @@ def cmd_review(args):
         else:
             rejected += 1
             print("  rejected: " + "; ".join(verdict["issues"]))
+
+    rooms_by_number = {room.number: room for room in args.source.rooms}
+    by_room = {}
+    for obj in object_selection(args):
+        if obj.placement_error:
+            continue
+        audit = audit_dir(args.obj_dst, obj)
+        attempt = latest_attempt(audit)
+        record = read_record(audit, attempt) if attempt else None
+        review = current_review(reviews, obj, attempt)
+        if (record is None or not record.get("promoted") or record.get("class") != "render"
+                or not (args.obj_dst / obj.out_name).is_file()
+                or (review is not None and review.attempt >= attempt and not args.force)):
+            continue
+        by_room.setdefault(obj.room, []).append((obj, attempt))
+    for number, todo in sorted(by_room.items()):
+        room = rooms_by_number[number]
+        entry = entries[room.key]
+        with Image.open(args.dst / room.out_name) as im:
+            overview = im.convert("RGB")
+        for start in range(0, len(todo), OBJECT_REVIEW_BATCH):
+            chunk = todo[start:start + OBJECT_REVIEW_BATCH]
+            print(f"review {len(chunk)} object(s) of {room.key}", flush=True)
+            items = []
+            for obj, attempt in chunk:
+                audit = audit_dir(args.obj_dst, obj)
+                with Image.open(audit / f"attempt-{attempt}.tiles" / "object.guide.png") as g, \
+                        Image.open(audit / f"attempt-{attempt}.png") as r:
+                    items.append((obj.key, g.convert("RGB"), r.convert("RGB")))
+            try:
+                verdicts = review_objects(items, overview, entry.style or "painted",
+                                          comfy_client.http_json, VLM_BASE_URL, VLM_MODEL,
+                                          VLM_API_KEY)
+            except Exception as error:
+                failed += len(chunk)
+                for obj, attempt in chunk:
+                    write_atomic(audit_dir(args.obj_dst, obj)
+                                 / f"attempt-{attempt}.review-error.txt", str(error))
+                print(f"  ERROR reviewing {room.key}'s objects: {error}", file=sys.stderr,
+                      flush=True)
+                continue
+            for obj, attempt in chunk:
+                verdict = verdicts.get(obj.key)
+                if verdict is None:
+                    print(f"  {obj.key}: no verdict; it stays unreviewed", flush=True)
+                    continue
+                write_atomic(audit_dir(args.obj_dst, obj) / f"attempt-{attempt}.review.json",
+                             json.dumps(verdict, indent=2))
+                reviews[obj.key] = Review(attempt, verdict["accepted"],
+                                          tuple(verdict["issues"]), "review")
+                save_reviews(args.reviews, reviews)
+                if verdict["accepted"]:
+                    accepted += 1
+                    print(f"  {obj.key}: accepted")
+                else:
+                    rejected += 1
+                    print(f"  {obj.key}: rejected: " + "; ".join(verdict["issues"]))
+
     print(f"done: accepted={accepted} rejected={rejected} skipped={skipped} failed={failed} "
           f"-> {args.reviews}")
     return 1 if failed else 0

@@ -155,6 +155,19 @@ class ParseReviewTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     p.parse_review(text)
 
+    def test_parse_object_reviews(self):
+        text = ('```json\n{"objects": {"obj010_02": {"accepted": false, "issues": ["a halo"]},'
+                ' "obj011_01": {"accepted": true, "issues": []},'
+                ' "obj014_01": {"accepted": true, "issues": ["contradiction"]},'
+                ' "obj999_01": {"accepted": true, "issues": []}}}\n```')
+        result = p.parse_object_reviews(text, ["obj010_02", "obj011_01", "obj014_01", "obj012_01"])
+        self.assertEqual(result, {"obj010_02": {"accepted": False, "issues": ["a halo"]},
+                                  "obj011_01": {"accepted": True, "issues": []}})
+        with self.assertRaisesRegex(ValueError, "objects mapping"):
+            p.parse_object_reviews('{"accepted": true}', ["obj010_02"])
+        pair = p.pair_image(Image.new("RGB", (40, 30)), Image.new("RGB", (40, 30)))
+        self.assertEqual(pair.size, (96, 30))
+
 
 if __name__ == "__main__":
     unittest.main()

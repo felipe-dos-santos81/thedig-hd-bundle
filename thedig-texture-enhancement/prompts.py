@@ -84,6 +84,15 @@ Reject when:
 4. seams: a visible vertical or horizontal seam, a doubled object or repeated detail where windows meet, or a jump in colour or texture between neighbouring windows in the whole recreation.
 Return ONLY JSON: {"accepted": true or false, "issues": ["one specific problem: its window number, its screen position and a concrete correction"]}. Accept only if there are no significant problems; use an empty issues list when accepted. At most six issues.'''
 
+OBJECT_REVIEW_BATCH = 8     # objects per VLM request: each is one image, plus the room overview
+
+OBJECT_REVIEW_QUESTION = '''Each of the first {count} images shows one object of a room from a 1995 adventure game as two halves side by side: on the left the authoritative original with a little of the room around it (smoothed and enlarged), on the right the same crop after the object was recreated in high definition over the already recreated room. The last image is the whole recreated room, downscaled. The objects are, in order: {keys}.
+Reject an object when:
+1. layout: its outline, size or position changed, part of it is missing, or something was added around it;
+2. blending: it does not match the surrounding room's style, light or colour, or a visible edge or halo separates it from the room;
+3. style: {style_rule}.
+Return ONLY JSON: {"objects": {"<key>": {"accepted": true or false, "issues": ["one specific problem and a concrete correction"]}}} with one entry for each object key above. Use an empty issues list when accepted. At most three issues per object.'''
+
 _NONE = ("none", "no text", "absent", "no legible text")
 
 
@@ -212,8 +221,17 @@ def caption_room(images, http, base_url, model, key):
                 timeout=CAPTION_TIMEOUT)
 
 
-def parse_review(text):
-    """{"accepted", "issues"} from the VLM's answer, tolerating fences and chatter."""
+def pair_image(guide, render, gap=16):
+    """`guide` and `render` side by side on black, `gap` px apart."""
+    out = Image.new("RGB", (guide.width + gap + render.width, max(guide.height, render.height)))
+    out.paste(guide.convert("RGB"), (0, 0))
+    out.paste(render.convert("RGB"), (guide.width + gap, 0))
+    return out
+
+
+def _json_text(text, required):
+    """The JSON object in the VLM's answer that has the key `required`,
+    tolerating fences and chatter."""
     text = text.strip()
     if "```" in text:
         parts = text.split("```")
@@ -225,12 +243,15 @@ def parse_review(text):
                 value = json.loads(chunk)
             except ValueError:
                 continue
-            if isinstance(value, dict) and "accepted" in value:
-                text = chunk
-                break
+            if isinstance(value, dict) and required in value:
+                return chunk
     elif not text.startswith("{") and "{" in text and "}" in text:
-        text = text[text.find("{"):text.rfind("}") + 1].strip()
-    value = json.loads(text)
+        return text[text.find("{"):text.rfind("}") + 1].strip()
+    return text
+
+
+def _verdict(value):
+    """{"accepted", "issues"} from one verdict mapping, or ValueError."""
     if not isinstance(value, dict) or type(value.get("accepted")) is not bool:
         raise ValueError("VLM review must contain a boolean accepted verdict")
     issues = value.get("issues")
@@ -239,6 +260,28 @@ def parse_review(text):
     if value["accepted"] != (not issues):
         raise ValueError("VLM review verdict contradicts its issues")
     return {"accepted": value["accepted"], "issues": issues}
+
+
+def parse_review(text):
+    """{"accepted", "issues"} from the VLM's answer, tolerating fences and chatter."""
+    return _verdict(json.loads(_json_text(text, "accepted")))
+
+
+def parse_object_reviews(text, keys):
+    """{key: {"accepted", "issues"}} for each of `keys` the answer judges
+    validly. A key it misses, an invalid or contradictory entry, and a key not
+    asked about are left out."""
+    value = json.loads(_json_text(text, "objects"))
+    objects = value.get("objects") if isinstance(value, dict) else None
+    if not isinstance(objects, dict):
+        raise ValueError("VLM object review must contain an objects mapping")
+    result = {}
+    for key in keys:
+        try:
+            result[key] = _verdict(objects.get(key))
+        except ValueError:
+            continue
+    return result
 
 
 def review_room(pairs, overview, kind, caption, http, base_url, model, key, style="painted"):
@@ -251,6 +294,19 @@ def review_room(pairs, overview, kind, caption, http, base_url, model, key, styl
     images = [image for pair in pairs for image in pair] + [overview]
     return parse_review(_ask(question, images, http, base_url, model, key, json_mode=True,
                              max_tokens=1200, timeout=REVIEW_TIMEOUT))
+
+
+def review_objects(items, overview, style, http, base_url, model, key):
+    """The VLM's verdicts on up to OBJECT_REVIEW_BATCH objects of one room:
+    `items` is [(key, guide crop, render crop), ...]."""
+    keys = [k for k, _, _ in items]
+    question = (OBJECT_REVIEW_QUESTION.replace("{count}", str(len(items)))
+                .replace("{keys}", ", ".join(keys))
+                .replace("{style_rule}", STYLE_RULES.get(style, STYLE_RULES["painted"])))
+    images = [pair_image(guide, render) for _, guide, render in items] + [overview]
+    return parse_object_reviews(_ask(question, images, http, base_url, model, key,
+                                     json_mode=True, max_tokens=300 * len(items) + 200,
+                                     timeout=REVIEW_TIMEOUT), keys)
 
 
 def vlm_is_serving(base_url, model, http, key=""):
