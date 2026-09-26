@@ -63,8 +63,12 @@ class RenderPromptTests(unittest.TestCase):
         self.assertNotIn("LETTERING:", text)
 
     def test_window_note_and_corrections(self):
-        note = p.window_note(248, 568, 0, 568)
-        self.assertIn("from 44% to 100%", note)
+        note = p.window_note((248, 0, 568, 144), (0, 0, 568, 144))
+        self.assertIn("from 44% to 100% of the room's width", note)
+        self.assertNotIn("height", note)
+        tall = p.window_note((32, 112, 352, 352), (0, 0, 352, 472))
+        self.assertIn("from 9% to 100% of the room's width and from 24% to 75% of its height",
+                      tall)
         text = p.render_prompt("SCENE: a street.", "scene", ["the awning moved left"], note)
         self.assertIn(note, text)
         self.assertIn("CORRECT THESE PROBLEMS FROM THE PREVIOUS ATTEMPT WHILE KEEPING THE "

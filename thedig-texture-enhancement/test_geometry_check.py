@@ -3,7 +3,7 @@ import operator
 import unittest
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 import geometry_check as gc
 import testkit
@@ -13,6 +13,13 @@ def blocks(width, height, seed=0, size=8):
     rng = np.random.default_rng(seed)
     grid = rng.integers(0, 256, size=(-(-height // size), -(-width // size), 3), dtype=np.uint8)
     return Image.fromarray(np.kron(grid, np.ones((size, size, 1), np.uint8))[:height, :width])
+
+
+def noise_image(size, seed):
+    rng = np.random.default_rng(seed)
+    w, h = size
+    image = Image.fromarray(rng.integers(0, 256, (h, w, 3), dtype=np.uint8))
+    return image.filter(ImageFilter.GaussianBlur(1))
 
 
 def up(image):
@@ -96,8 +103,8 @@ class CheckTests(unittest.TestCase):
 
     def test_check_passes(self):
         with self.subTest("aligned render"):
-            result = gc.check(up(self.source), self.source, windows=[(0, 64), (64, 128)],
-                              boundaries=[256])
+            result = gc.check(up(self.source), self.source,
+                              windows=[(0, 0, 64, 64), (64, 0, 128, 64)], boundaries=[256])
             self.assertTrue(result.passed, result.issues)
             self.assertEqual((len(result.window_shifts), len(result.seam_ratios)), (2, 1))
             json.dumps(result.as_dict())
@@ -108,7 +115,7 @@ class CheckTests(unittest.TestCase):
             source = Image.fromarray(arr)
             render = up(source)
             render.paste((0, 0, 0), (0, 0, 256, 256))  # ... that the render loses
-            result = gc.check(render, source, windows=[(0, 64), (64, 128)])
+            result = gc.check(render, source, windows=[(0, 0, 64, 64), (64, 0, 128, 64)])
             self.assertLess(np.count_nonzero(gc.sobel(gc.luminance(source)[:, :64])
                                              > gc.EDGE_THRESHOLD), gc.MIN_WINDOW_EDGES)
             self.assertTrue(result.passed, result.issues)
@@ -122,7 +129,7 @@ class CheckTests(unittest.TestCase):
         with self.subTest("one window"):
             render = up(self.source)
             render.paste(testkit.shift_right(render.crop((256, 0, 512, 256))), (256, 0))
-            result = gc.check(render, self.source, windows=[(0, 64), (64, 128)])
+            result = gc.check(render, self.source, windows=[(0, 0, 64, 64), (64, 0, 128, 64)])
             self.assertTrue(any("window 2 is shifted" in issue for issue in result.issues),
                             result.issues)
             self.assertFalse(any("window 1" in issue for issue in result.issues))
@@ -141,7 +148,7 @@ class CheckTests(unittest.TestCase):
         arr = np.asarray(self.source).copy()
         arr[:, :64] = 0
         source = Image.fromarray(arr)
-        result = gc.check(up(source), source, windows=[(0, 64), (64, 128)])
+        result = gc.check(up(source), source, windows=[(0, 0, 64, 64), (64, 0, 128, 64)])
         self.assertTrue(result.passed, result.issues)
         self.assertEqual(result.window_shifts[0], (0.0, 0.0))
         self.assertEqual(result.window_agreements[0], 1.0)
@@ -150,7 +157,7 @@ class CheckTests(unittest.TestCase):
         # Regression: spec 7, "every window passes"; a window painted to mush left the
         # whole-room agreement above the bar.
         source = blocks(512, 64, seed=5)
-        windows = [(x, x + 64) for x in range(0, 512, 64)]
+        windows = [(x, 0, x + 64, 64) for x in range(0, 512, 64)]
         render = up(source)
         render.paste((128, 128, 128), (448 * 4, 0, 512 * 4, 256))
         result = gc.check(render, source, windows=windows)
@@ -160,6 +167,22 @@ class CheckTests(unittest.TestCase):
         self.assertRegex(result.issues[0],
                          r"^geometry: window 8 edge agreement 0\.\d\d, needs 0\.80$")
         self.assertEqual(result.as_dict()["window_agreements"], list(result.window_agreements))
+
+    def test_row_seams_and_a_lower_window_shift(self):
+        source = noise_image((64, 64), seed=11)
+        render = source.resize((256, 256), Image.Resampling.LANCZOS)
+        with self.subTest("a horizontal seam"):
+            arr = np.asarray(render).copy()
+            arr[128:] = np.clip(arr[128:].astype(int) + 90, 0, 255).astype(np.uint8)
+            result = gc.check(Image.fromarray(arr), source, rows=[128])
+            self.assertGreater(result.seam_ratios[-1], gc.SEAM_WARN)
+        with self.subTest("only the lower window slid"):
+            arr = np.asarray(render).copy()
+            arr[128:, 8:] = arr[128:, :-8]
+            result = gc.check(Image.fromarray(arr), source,
+                              windows=[(0, 0, 64, 32), (0, 32, 64, 64)])
+            self.assertLess(abs(result.window_shifts[0][0]), gc.MAX_SHIFT)
+            self.assertGreaterEqual(abs(result.window_shifts[1][0]), gc.MAX_SHIFT)
 
 
 if __name__ == "__main__":

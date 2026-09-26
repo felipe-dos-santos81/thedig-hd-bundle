@@ -221,19 +221,46 @@ def plan_room(image):
     return RoomPlan(margins, wrap, (start, end), (top, bottom), windows, height)
 
 
-def stitch_from(window, previous):
-    """The native column from which `window`'s render replaces the stitch: the
-    middle of its overlap with `previous`, or its start when it is the first."""
-    return window.x0 if previous is None else window.x0 + (previous.x1 - window.x0) // 2
+def neighbours(plan, index):
+    """(left, up): the windows before plan.windows[index] in its row and in its
+    column, or None. The windows are a grid in row order."""
+    win = plan.windows[index]
+    left = up = None
+    for other in plan.windows[:index]:
+        if other.y0 == win.y0 and other.x0 < win.x0:
+            left = other
+        if other.x0 == win.x0 and other.y0 < win.y0:
+            up = other
+    return left, up
+
+
+def stitch_origin(window, left, up):
+    """The native (x, y) from which `window`'s render replaces the stitch: the
+    middle of its overlap with each neighbour, or its own edge where it has none."""
+    x = window.x0 if left is None else window.x0 + (left.x1 - window.x0) // 2
+    y = window.y0 if up is None else window.y0 + (up.y1 - window.y0) // 2
+    return x, y
+
+
+@dataclass(frozen=True)
+class Boundaries:
+    columns: list           # 4x columns where the stitch switches renders (and the wrap's joins)
+    rows: list              # 4x rows where it does
 
 
 def stitch_boundaries(plan):
-    """The 4x columns where the stitched image switches from one render to another."""
-    xs = {stitch_from(win, prev) * SCALE for prev, win in zip(plan.windows, plan.windows[1:])}
+    xs, ys = set(), set()
+    for k, win in enumerate(plan.windows):
+        left, up = neighbours(plan, k)
+        x, y = stitch_origin(win, left, up)
+        if left is not None:
+            xs.add(x * SCALE)
+        if up is not None:
+            ys.add(y * SCALE)
     if plan.wrap:
         q, period = WINDOW_WIDTH // 4, plan.wrap.period
         xs |= {(period - q) * SCALE, q * SCALE, period * SCALE}
-    return sorted(xs)
+    return Boundaries(sorted(xs), sorted(ys))
 
 
 # ---- composites, stitch, seam, fix-ups --------------------------------------
@@ -253,30 +280,41 @@ def _mask(row, height):
     return Image.fromarray(np.tile(row, (height, 1)))
 
 
-def window_inputs(guide, canvas, window, previous):
+def _full(n):
+    return np.full(n, 255, np.uint8)
+
+
+def window_inputs(guide, canvas, window, left, up):
     """(guide crop, composite, mask) for rendering `window`, all 4x.
 
-    `guide` is the 4x guide and `canvas` the stitch so far. The composite is the
-    guide crop with its overlap with `previous` taken from the canvas. The mask
-    (255 paints, 0 keeps) holds the overlap's outer half, ramps across its inner
-    half and frees the rest; a first window is painted whole.
+    `guide` is the padded 4x guide and `canvas` the stitch so far. The composite
+    is the guide crop with its overlaps with `left` and `up` taken from the
+    canvas. The mask (255 paints, 0 keeps) is the minimum of a column ramp and a
+    row ramp: each holds its overlap's outer half and ramps across its inner
+    half, so the kept region is an L; a first window is painted whole.
     """
-    h = guide.height
-    crop = guide.crop((window.x0 * SCALE, 0, window.x1 * SCALE, h))
+    box = window.box4
+    crop = guide.crop(box)
     composite = crop.copy()
-    if previous is None:
-        return crop, composite, _mask(np.full(crop.width, 255, np.uint8), h)
-    overlap = previous.x1 - window.x0
-    composite.paste(canvas.crop((window.x0 * SCALE, 0, previous.x1 * SCALE, h)), (0, 0))
-    row = _mask_row(crop.width, (overlap // 2) * SCALE, overlap * SCALE)
-    return crop, composite, _mask(row, h)
+    w4, h4 = crop.size
+    mask_x, mask_y = _full(w4), _full(h4)
+    if left is not None:
+        overlap = left.x1 - window.x0
+        composite.paste(canvas.crop((box[0], box[1], left.x1 * SCALE, box[3])), (0, 0))
+        mask_x = _mask_row(w4, (overlap // 2) * SCALE, overlap * SCALE)
+    if up is not None:
+        overlap = up.y1 - window.y0
+        composite.paste(canvas.crop((box[0], box[1], box[2], up.y1 * SCALE)), (0, 0))
+        mask_y = _mask_row(h4, (overlap // 2) * SCALE, overlap * SCALE)
+    mask = np.minimum(mask_x[None, :], mask_y[:, None])
+    return crop, composite, Image.fromarray(mask)
 
 
-def paste_window(canvas, window, previous, rendered):
-    """Stitch `rendered`, the window's 4x render, into `canvas` from stitch_from on."""
-    x = stitch_from(window, previous)
-    offset = (x - window.x0) * SCALE
-    canvas.paste(rendered.crop((offset, 0, rendered.width, rendered.height)), (x * SCALE, 0))
+def paste_window(canvas, window, left, up, rendered):
+    """Stitch `rendered`, the window's 4x render, into `canvas` from its stitch origin."""
+    x, y = stitch_origin(window, left, up)
+    ox, oy = (x - window.x0) * SCALE, (y - window.y0) * SCALE
+    canvas.paste(rendered.crop((ox, oy, rendered.width, rendered.height)), (x * SCALE, y * SCALE))
 
 
 def _rolled(image, period, half):

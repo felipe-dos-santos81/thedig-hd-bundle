@@ -45,6 +45,12 @@ class DriverFixture(unittest.TestCase):
         return json.loads((self.dst / ".quality" / f"room_{number:03d}"
                            / f"attempt-{attempt}.json").read_text())
 
+    def use_rooms(self, rooms, objects=()):
+        """Swap in a source tree holding `rooms` and `objects`, and a rooms.yaml for them."""
+        self.src = testkit.make_source(self.root / "alt", rooms=rooms, objects=objects)
+        self.source = source_tree.load(self.src)
+        testkit.write_rooms(self.rooms_file, rooms=rooms)
+
 
 class VerifyTests(DriverFixture):
     def write_output(self, number, size=None, mode="RGB", record=True, sha=None):
@@ -189,7 +195,7 @@ class RenderRoomTests(DriverFixture):
         record = self.record(1)
         self.assertEqual((record["promoted"], record["seed"], record["windows"], record["wrap"],
                           record["workflow"], record["reference"]),
-                         (True, 42, [[0, 320]], None, "qwen-edit-2511-canny", "guide"))
+                         (True, 42, [[0, 0, 320, 144]], None, "qwen-edit-2511-canny", "guide"))
         self.assertEqual(record["output_sha256"], source_tree.file_sha256(self.dst / "room_001.png"))
         audit = self.dst / ".quality" / "room_001"
         self.assertTrue((audit / "attempt-1.png").is_file())
@@ -201,7 +207,7 @@ class RenderRoomTests(DriverFixture):
         kw = stub.render.call_args.kwargs
         self.assertEqual((kw["seed"], kw["reference"], kw["name"], kw["negative"]),
                          (42, "guide", "room_001_a1-window-1", PAINTED_NEGATIVE))
-        self.assertNotIn("one window of a wide scrolling room", kw["positive"])
+        self.assertNotIn("one window of a large room", kw["positive"])
         self.assertEqual(list((self.comfy_dir / "output" / "dig").iterdir()), [])
 
     def test_a_second_window_continues_the_first(self):
@@ -276,6 +282,18 @@ class RenderRoomTests(DriverFixture):
         # Regression: the same name and seed across runs could hit ComfyUI's cache.
         self.assertEqual(kw["name"], "room_001_a2-window-1")
         self.assertTrue((self.dst / ".quality/room_001/attempt-2.tiles/window-1.png").is_file())
+
+    def test_a_tall_room_renders_in_a_grid_and_keeps_its_size(self):
+        self.use_rooms((testkit.room(5, 352, 470),))
+        self.entries = load_rooms(self.rooms_file)
+        (_, result), stub = self.render(5)
+        self.assertTrue(result.passed, result.issues)
+        self.assertEqual(stub.render.call_count, 6)
+        with Image.open(self.dst / "room_005.png") as im:
+            self.assertEqual((im.size, im.mode), ((1408, 1880), "RGB"))
+        record = self.record(5)
+        self.assertEqual((record["windows"][3], record["padded_height"]), ([32, 112, 352, 352], 472))
+        self.assertEqual(len(record["geometry"]["seam_ratios"]), 3)
 
 
 class BatchTests(DriverFixture):

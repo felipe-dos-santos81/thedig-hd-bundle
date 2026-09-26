@@ -192,7 +192,7 @@ def caption_images(src, room):
     plan = room_geometry.plan_room(image)
     if len(plan.windows) > 1:
         for win in plan.windows:
-            crop = rgb.crop((win.x0, 0, win.x1, rgb.height))
+            crop = rgb.crop((win.x0, win.y0, win.x1, min(win.y1, rgb.height)))
             images.append(crop.resize((crop.width * SCALE, crop.height * SCALE),
                                       Image.Resampling.NEAREST))
     return images
@@ -228,17 +228,20 @@ def cmd_caption(args):
 # ---- render one room --------------------------------------------------------
 
 def finish_room(canvas, guide, plan, image, strength):
-    """The stitched 4x `canvas` colour-matched toward the guide by `strength`,
-    fixed up, and checked against the de-dithered source:
-    (final image, GeometryResult, stitch boundaries)."""
-    matched = colour_match.match(canvas, guide.full, strength)
-    final = room_geometry.apply_fixups(matched, plan, image)
-    if final.size != guide.full.size:
-        raise RuntimeError(f"the stitched room is {final.width}x{final.height}, "
+    """The stitched 4x `canvas`, cropped to the room's exact 4x size,
+    colour-matched toward the guide by `strength`, fixed up, and checked against
+    the de-dithered source: (final image, GeometryResult, Boundaries)."""
+    if canvas.size != guide.full.size:
+        raise RuntimeError(f"the stitched room is {canvas.width}x{canvas.height}, "
                            f"expected {guide.full.width}x{guide.full.height}")
+    size = (image.width * SCALE, image.height * SCALE)
+    reference = guide.full.crop((0, 0) + size)
+    matched = colour_match.match(canvas.crop((0, 0) + size), reference, strength)
+    final = room_geometry.apply_fixups(matched, plan, image)
     boundaries = room_geometry.stitch_boundaries(plan)
-    result = geometry_check.check(final, guide.native, [(w.x0, w.x1) for w in plan.windows],
-                                  boundaries, reference=guide.full)
+    result = geometry_check.check(final, guide.native, [w.box for w in plan.windows],
+                                  boundaries.columns, reference=reference,
+                                  rows=[y for y in boundaries.rows if y < size[1]])
     return final, result, boundaries
 
 
@@ -292,15 +295,14 @@ def render_room(args, workflow, room, entry, corrections):
                                    f"expected {guide_image.width}x{guide_image.height}")
             return rendered
 
-        start, end = plan.span
-        previous = None
-        for k, window in enumerate(plan.windows, 1):
+        area = (plan.span[0], plan.rows[0], plan.span[1], plan.rows[1])
+        for k, window in enumerate(plan.windows):
+            left, up = room_geometry.neighbours(plan, k)
             crop, composite, mask = room_geometry.window_inputs(guide.full, canvas, window,
-                                                                previous)
-            note = window_note(window.x0, window.x1, start, end) if len(plan.windows) > 1 else ""
-            rendered = render(f"window-{k}", crop, composite, mask, note)
-            room_geometry.paste_window(canvas, window, previous, rendered)
-            previous = window
+                                                                left, up)
+            note = window_note(window.box, area) if len(plan.windows) > 1 else ""
+            rendered = render(f"window-{k + 1}", crop, composite, mask, note)
+            room_geometry.paste_window(canvas, window, left, up, rendered)
         if plan.wrap:
             strip, composite, mask = room_geometry.seam_inputs(guide.full, canvas, plan)
             room_geometry.apply_seam(canvas, plan,
@@ -312,10 +314,12 @@ def render_room(args, workflow, room, entry, corrections):
                      + f"\n\n--- negative ---\n{PAINTED_NEGATIVE}\n")
         canvas.save(audit / f"attempt-{attempt}.png")
         final, result, boundaries = finish_room(canvas, guide, plan, image, args.match_strength)
-        for x, ratio in zip(boundaries, result.seam_ratios):
+        seams = ([("column", x) for x in boundaries.columns]
+                 + [("row", y) for y in boundaries.rows if y < image.height * SCALE])
+        for (axis, at), ratio in zip(seams, result.seam_ratios):
             if ratio > geometry_check.SEAM_WARN:
-                print(f"  warning: {room.key} seam at 4x column {x}: step {ratio:.1f}x the local "
-                      "texture", flush=True)
+                print(f"  warning: {room.key} seam at 4x {axis} {at}: step {ratio:.1f}x the "
+                      "local texture", flush=True)
         sha = None
         if result.passed:
             dst = args.dst / room.out_name
@@ -326,8 +330,10 @@ def render_room(args, workflow, room, entry, corrections):
             "attempt": attempt, "workflow": workflow.name, "seed": seed, "reference": REFERENCE,
             "dedither": room_geometry.DEDITHER_METHOD,
             "window_width": room_geometry.WINDOW_WIDTH,
+            "window_height": room_geometry.WINDOW_HEIGHT,
             "window_overlap": room_geometry.WINDOW_OVERLAP,
-            "windows": [[w.x0, w.x1] for w in plan.windows],
+            "windows": [list(w.box) for w in plan.windows],
+            "padded_height": plan.height,
             "wrap": [plan.wrap.period, plan.wrap.span] if plan.wrap else None,
             "margins": {"left": m.left, "right": m.right, "top": m.top, "bottom": m.bottom},
             "match": {"rule": colour_match.RULE, "strength": args.match_strength},
@@ -452,18 +458,27 @@ def write_nearest(args, room):
 def plan_line(args, room, entry, corrections):
     """One dry-run line: the room's size, windows, wraparound, margins and
     corrections; marked NOCAPTION instead of render for an uncaptioned room."""
-    plan = room_geometry.plan_room(source_tree.open_rgba(args.src, room))
+    image = source_tree.open_rgba(args.src, room)
+    plan = room_geometry.plan_room(image)
+    one_row = len({(win.y0, win.y1) for win in plan.windows}) == 1
+
+    def label(win):
+        return (f"{win.x0}-{win.x1}" if one_row
+                else f"{win.x0}-{win.x1}/{win.y0}-{win.y1}")
+
     w, h = room.out_size
     captioned = bool(entry.caption.strip())
     mark = "render" if captioned else "NOCAPTION"
     line = (f"  {mark:7} {room.key} {entry.kind:6} -> {w}x{h}  windows "
-            + " ".join(f"{win.x0}-{win.x1}" for win in plan.windows))
+            + " ".join(label(win) for win in plan.windows))
     extras = []
     if plan.wrap:
         extras.append(f"wrap {plan.wrap.period}+{plan.wrap.span} (seam window)")
     m = plan.margins
     if m.left or m.right or m.top or m.bottom:
         extras.append(f"margins L{m.left} R{m.right} T{m.top} B{m.bottom}")
+    if plan.height != image.height:
+        extras.append(f"padded to {plan.height} rows")
     if corrections:
         extras.append(f"{len(corrections)} correction(s)")
     if not captioned:
@@ -605,7 +620,7 @@ def review_images(src, room, output):
         render = im.convert("RGB")
     pairs = []
     for win in plan.windows:
-        box = (win.x0 * SCALE, 0, win.x1 * SCALE, render.height)
+        box = (win.x0 * SCALE, win.y0 * SCALE, win.x1 * SCALE, min(win.y1 * SCALE, render.height))
         pairs.append((guide.full.crop(box), render.crop(box)))
     return pairs, render
 

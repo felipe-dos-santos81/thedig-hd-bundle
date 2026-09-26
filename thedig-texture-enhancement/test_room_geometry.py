@@ -25,10 +25,6 @@ def noise(size, seed=0):
     return Image.fromarray(rng.integers(0, 256, size=(h, w, 3), dtype=np.uint8))
 
 
-def spans(windows):
-    return [(w.x0, w.x1) for w in windows]
-
-
 def boxes(windows):
     return [w.box for w in windows]
 
@@ -143,15 +139,15 @@ class RoomPlanTests(unittest.TestCase):
         one = rg.plan_room(fixture_room(1))
         self.assertEqual((boxes(one.windows), one.wrap, one.span),
                          ([(0, 0, 320, 144)], None, (0, 320)))
-        self.assertEqual(rg.stitch_boundaries(one), [], msg="stitch boundaries")
+        self.assertEqual(rg.stitch_boundaries(one), rg.Boundaries([], []), msg="stitch boundaries")
         two = rg.plan_room(fixture_room(2))
         self.assertEqual(boxes(two.windows), [(0, 0, 320, 144), (248, 0, 568, 144)])
-        self.assertEqual(rg.stitch_boundaries(two), [1136], msg="stitch boundaries")
+        self.assertEqual(rg.stitch_boundaries(two).columns, [1136], msg="stitch boundaries")
         wrap = rg.plan_room(fixture_room(3))
         self.assertEqual((wrap.wrap, wrap.span, wrap.margins),
                          (rg.Wrap(840, 224), (0, 840), rg.Margins(0, 88, 0, 0)))
         self.assertEqual(len(wrap.windows), 4)
-        self.assertEqual(rg.stitch_boundaries(wrap), [320, 976, 1664, 2368, 3040, 3360],
+        self.assertEqual(rg.stitch_boundaries(wrap).columns, [320, 976, 1664, 2368, 3040, 3360],
                          msg="stitch boundaries")
 
     def test_margins_round_the_span_out_to_8_columns(self):
@@ -199,13 +195,13 @@ class WindowInputTests(unittest.TestCase):
     def test_window_inputs(self):
         with self.subTest("a first window is painted whole"):
             crop, composite, mask = rg.window_inputs(self.guide, self.canvas,
-                                                      self.plan.windows[0], None)
+                                                      self.plan.windows[0], None, None)
             self.assertEqual(crop.size, (1280, 576))
             self.assertEqual(composite.tobytes(), crop.tobytes())
             self.assertEqual((mask.mode, set(np.asarray(mask).ravel())), ("L", {255}))
         with self.subTest("a later window holds the outer half of its overlap"):
             first, second = self.plan.windows
-            crop, composite, mask = rg.window_inputs(self.guide, self.canvas, second, first)
+            crop, composite, mask = rg.window_inputs(self.guide, self.canvas, second, first, None)
             m = np.asarray(mask)
             self.assertTrue((m[:, :144] == 0).all())                # 36 native columns held
             ramp = m[0, 144:288]
@@ -220,10 +216,47 @@ class WindowInputTests(unittest.TestCase):
         first, second = self.plan.windows
         rendered = noise((1280, 576), seed=3)
         before = np.asarray(self.canvas).copy()
-        rg.paste_window(self.canvas, second, first, rendered)
+        rg.paste_window(self.canvas, second, first, None, rendered)
         after = np.asarray(self.canvas)
         self.assertTrue((after[:, :1136] == before[:, :1136]).all())
         self.assertTrue((after[:, 1136:] == np.asarray(rendered)[:, 144:]).all())
+
+
+class GridTests(unittest.TestCase):
+    def setUp(self):
+        self.plan = rg.plan_room(testkit.to_image(testkit.room_pixels(testkit.room(9, 352, 470))))
+        self.guide = noise((1408, 1888), seed=1)
+        self.canvas = noise((1408, 1888), seed=2)
+
+    def test_neighbours_and_boundaries(self):
+        w = self.plan.windows
+        self.assertEqual(rg.neighbours(self.plan, 0), (None, None))
+        self.assertEqual(rg.neighbours(self.plan, 1), (w[0], None))
+        self.assertEqual(rg.neighbours(self.plan, 3), (w[2], w[1]))
+        self.assertEqual(rg.stitch_origin(w[3], w[2], w[1]), (176, 176))
+        self.assertEqual(rg.stitch_boundaries(self.plan), rg.Boundaries([704], [704, 1168]))
+
+    def test_an_inner_window_keeps_an_l_of_what_is_painted(self):
+        w = self.plan.windows
+        crop, composite, mask = rg.window_inputs(self.guide, self.canvas, w[3], w[2], w[1])
+        self.assertEqual(crop.size, (1280, 960))
+        m = np.asarray(mask)
+        self.assertEqual((m[0, 0], m[0, -1], m[-1, 0], m[-1, -1]), (0, 0, 0, 255))
+        c, canvas = np.asarray(composite), np.asarray(self.canvas)
+        # overlap with the upper window: native rows 112-240, all columns of the window
+        self.assertTrue((c[:512] == canvas[448:960, 128:1408]).all())
+        # overlap with the left window: native columns 32-320, all rows of the window
+        self.assertTrue((c[:, :1152] == canvas[448:1408, 128:1280]).all())
+
+    def test_paste_starts_at_the_stitch_origin(self):
+        w = self.plan.windows
+        before = np.asarray(self.canvas).copy()
+        rendered = noise((1280, 960), seed=3)
+        rg.paste_window(self.canvas, w[3], w[2], w[1], rendered)
+        after, r = np.asarray(self.canvas), np.asarray(rendered)
+        self.assertTrue((after[704:1408, 704:1408] == r[256:, 576:]).all())
+        self.assertTrue((after[:704] == before[:704]).all())
+        self.assertTrue((after[:, :704] == before[:, :704]).all())
 
 
 class SeamTests(unittest.TestCase):

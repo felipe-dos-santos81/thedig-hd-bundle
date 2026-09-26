@@ -38,7 +38,7 @@ class GeometryResult:
     window_shifts: tuple    # ((dx, dy), ...) per window
     edge_agreement: float
     window_agreements: tuple  # per window; 1.0 for a window too sparse to judge
-    seam_ratios: tuple      # per stitch boundary; warnings only
+    seam_ratios: tuple      # per column boundary, then per row boundary; warnings only
     issues: tuple           # why the render fails; empty when it passes
 
     @property
@@ -143,22 +143,26 @@ def seam_ratio(image, x, band=SEAM_BAND):
     return round(min(step / base, SEAM_CAP), 3)
 
 
-def check(render, source, windows=(), boundaries=(), reference=None):
+def check(render, source, windows=(), boundaries=(), reference=None, rows=()):
     """Compare the 4x `render` with its de-dithered native `source` (both RGB).
 
-    A seam ratio is the render's step at a boundary over its local steps; with a
-    4x `reference` (the guide) it is divided by the reference's own ratio there,
-    so a boundary that falls on a real edge of the source is not called a seam.
+    `windows` are native (x0, y0, x1, y1) boxes, clipped to the source.
+    `boundaries` are 4x stitch columns and `rows` 4x stitch rows. A seam ratio is
+    the render's step at a boundary over its local steps; with a 4x `reference`
+    (the guide) it is divided by the reference's own ratio there, so a boundary
+    that falls on a real edge of the source is not called a seam.
     """
     small = luminance(render.resize(source.size, Image.Resampling.BOX))
     base = luminance(source)
+    sh, sw = base.shape
+    boxes = [(max(0, x0), max(0, y0), min(sw, x1), min(sh, y1)) for x0, y0, x1, y1 in windows]
     issues = []
     shift = phase_shift(base, small)
     if max(abs(shift[0]), abs(shift[1])) >= MAX_SHIFT:
         issues.append(f"geometry: the room is shifted {shift[0]:+.1f},{shift[1]:+.1f} px")
     window_shifts = []
-    for k, (x0, x1) in enumerate(windows, 1):
-        ws = phase_shift(base[:, x0:x1], small[:, x0:x1])
+    for k, (x0, y0, x1, y1) in enumerate(boxes, 1):
+        ws = phase_shift(base[y0:y1, x0:x1], small[y0:y1, x0:x1])
         window_shifts.append(ws)
         if max(abs(ws[0]), abs(ws[1])) >= MAX_SHIFT:
             issues.append(f"geometry: window {k} is shifted {ws[0]:+.1f},{ws[1]:+.1f} px")
@@ -168,19 +172,22 @@ def check(render, source, windows=(), boundaries=(), reference=None):
         issues.append(f"geometry: edge agreement {agreement:.2f}, needs "
                       f"{MIN_EDGE_AGREEMENT:.2f}")
     # Each window is judged on the whole room's edge maps, masked to its
-    # columns, so a window's own borders add no Sobel artefacts.
+    # box, so a window's own borders add no Sobel artefacts.
     window_agreements = []
-    for k, (x0, x1) in enumerate(windows, 1):
-        wa = round(_fraction(strong[:, x0:x1], kept[:, x0:x1], MIN_WINDOW_EDGES), 4)
+    for k, (x0, y0, x1, y1) in enumerate(boxes, 1):
+        wa = round(_fraction(strong[y0:y1, x0:x1], kept[y0:y1, x0:x1], MIN_WINDOW_EDGES), 4)
         window_agreements.append(wa)
         if wa < MIN_EDGE_AGREEMENT:
             issues.append(f"geometry: window {k} edge agreement {wa:.2f}, needs "
                           f"{MIN_EDGE_AGREEMENT:.2f}")
     ratios = []
-    for x in boundaries:
-        ratio = seam_ratio(render, x)
-        if reference is not None:
-            ratio = round(ratio / max(1.0, seam_ratio(reference, x)), 3)
-        ratios.append(ratio)
+    turned = render.transpose(Image.Transpose.TRANSPOSE)
+    turned_ref = None if reference is None else reference.transpose(Image.Transpose.TRANSPOSE)
+    for image, ref, positions in ((render, reference, boundaries), (turned, turned_ref, rows)):
+        for x in positions:
+            ratio = seam_ratio(image, x)
+            if ref is not None:
+                ratio = round(ratio / max(1.0, seam_ratio(ref, x)), 3)
+            ratios.append(ratio)
     return GeometryResult(shift, tuple(window_shifts), agreement, tuple(window_agreements),
                           tuple(ratios), tuple(issues))

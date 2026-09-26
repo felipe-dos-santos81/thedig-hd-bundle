@@ -87,13 +87,21 @@ def text_section(caption):
     return None
 
 
-def window_note(x0, x1, start, end):
-    """What one window of a wide room is told about its place in the room."""
-    span = end - start
-    a, b = (x0 - start) / span, (x1 - start) / span
-    return (f"This image is one window of a wide scrolling room: it shows the part from {a:.0%} "
-            f"to {b:.0%} of the room's width. Paint only what this reference window shows; "
-            "objects the observations place elsewhere in the room must not appear in it.")
+def window_note(box, area):
+    """What one window of a large room is told about its place in the room:
+    its native `box` (x0, y0, x1, y1) within the windows' `area`."""
+    x0, y0, x1, y1 = box
+    ax0, ay0, ax1, ay1 = area
+    parts = []
+    if (x0, x1) != (ax0, ax1):
+        parts.append(f"from {(x0 - ax0) / (ax1 - ax0):.0%} to {(x1 - ax0) / (ax1 - ax0):.0%} "
+                     "of the room's width")
+    if (y0, y1) != (ay0, ay1):
+        parts.append(f"from {(y0 - ay0) / (ay1 - ay0):.0%} to {(y1 - ay0) / (ay1 - ay0):.0%} "
+                     "of its height")
+    return ("This image is one window of a large room: it shows the part " + " and ".join(parts)
+            + ". Paint only what this reference window shows; objects the observations place "
+            "elsewhere in the room must not appear in it.")
 
 
 def render_prompt(caption, kind, corrections=(), note="", reference=DEFAULT_REFERENCE):
