@@ -40,9 +40,12 @@ REPO_DIR = Path(__file__).resolve().parent
 # reference:   how the positive prompt names the window
 # settings:    ((node id, input key), value) pairs written over the template's values
 # fallback:    registry key of the workflow for a room this one left stuck, or None
+# multi_window: registry key of the workflow a room with several renders (windows or a
+#              wraparound seam) goes through instead of this one, or None
 Workflow = namedtuple("Workflow", "name template guide composite mask reference_inputs "
                                   "positive negative seed save model_files node_classes "
-                                  "reference settings fallback", defaults=((), None))
+                                  "reference settings fallback multi_window",
+                      defaults=((), None, None))
 
 MASK_CLASSES = ("LoadImageMask", "SetLatentNoiseMask", "DifferentialDiffusion")
 
@@ -71,12 +74,16 @@ WORKFLOWS = {
                      ("text_encoders", "4", "clip_name"),
                      ("vae", "6", "vae_name")),
         node_classes=("TextEncodeQwenImage21",) + MASK_CLASSES,
-        reference="<image1>", fallback="qwen-image-2.1-i2i-faithful"),
+        reference="<image1>", fallback="qwen-image-2.1-i2i-faithful",
+        multi_window="qwen-image-2.1-i2i-faithful"),
 }
 # The same graph below full denoise: a clean repaint that keeps to the guide, for
-# the rooms whose full repaint the gate or the review rejected MAX_ATTEMPTS times.
+# the rooms whose full repaint the gate or the review rejected MAX_ATTEMPTS times,
+# and for every room with several renders: at 1.0 each window of rooms 2 and 27
+# painted the whole caption's objects (the 2026-09-26 spike); at 0.9 both held.
 WORKFLOWS["qwen-image-2.1-i2i-faithful"] = WORKFLOWS["qwen-image-2.1-i2i"]._replace(
-    name="qwen-image-2.1-i2i-faithful", settings=((("13", "denoise"), 0.9),), fallback=None)
+    name="qwen-image-2.1-i2i-faithful", settings=((("13", "denoise"), 0.9),), fallback=None,
+    multi_window=None)
 DEFAULT_WORKFLOW = "qwen-image-2.1-i2i"   # chosen by the spike on 2026-09-24: 2511 drifts ~1 native px
 REFERENCES = ("guide", "composite")
 

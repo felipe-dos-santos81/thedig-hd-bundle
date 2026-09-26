@@ -222,6 +222,11 @@ Node ids in `recreation_qwen21_i2i.json`: 1 LoadImage (the guide window),
 12 SetLatentNoiseMask, 13 KSampler (40 steps, cfg 1.0, denoise 1.0),
 14 VAEDecode, 15 SaveImage. Its fallback, `qwen-image-2.1-i2i-faithful`, is
 the same graph with the registry's `settings` writing denoise 0.9 into node 13.
+It is also the registry's `multi_window` workflow for `qwen-image-2.1-i2i`:
+`cmd_batch` (`room_workflow_for`) sends every room with more than one window,
+or a wraparound seam, through it, because at denoise 1.0 each window paints the
+whole caption's objects into itself (rooms 2 and 27 in the 2026-09-26 spike).
+Such a room has no fallback. Objects keep the default workflow (one render each).
 
 The 2.1 encoder's reference slot is an autogrow input and must be addressed
 as `images.image_1`: the AITD kit's live render showed the flat `image_1`

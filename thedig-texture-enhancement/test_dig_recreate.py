@@ -505,6 +505,36 @@ class BatchTests(DriverFixture):
         _, _, _, mocks = self.batch("--room", "1")
         mocks.render.assert_not_called()
 
+    def test_multi_window_rooms_render_through_the_faithful_workflow(self):
+        # Rooms with several renders (windows or a wraparound seam) leak the caption's
+        # objects into every window at denoise 1.0: the default workflow sends them
+        # through its multi_window workflow; one-window rooms keep the default.
+        _, out, _, _ = self.batch("--dry-run")
+        self.assertIn("(multi-window: qwen-image-2.1-i2i-faithful)", out)
+        self.assertNotRegex(out, r"room_001 .*multi-window")
+        code, out, err, mocks = self.batch()
+        self.assertEqual(code, 0, err)
+        used = {c.kwargs["name"].split("_a")[0]: c.args[0].name
+                for c in mocks.render.call_args_list}
+        self.assertEqual(used, {"room_001": "qwen-image-2.1-i2i",
+                                "room_002": "qwen-image-2.1-i2i-faithful",
+                                "room_003": "qwen-image-2.1-i2i-faithful"})
+        self.assertEqual(self.record(2)["workflow"], "qwen-image-2.1-i2i-faithful")
+        self.assertNotIn("fallback", out)
+        with self.subTest("an explicit workflow without multi_window is kept"):
+            _, _, _, mocks = self.batch("--room", "2", "--force", "--workflow",
+                                        "qwen-edit-2511-canny")
+            self.assertEqual({c.args[0].name for c in mocks.render.call_args_list},
+                             {"qwen-edit-2511-canny"})
+
+    def test_a_multi_window_room_has_no_further_fallback(self):
+        shifted = testkit.fake_render(testkit.shift_right)
+        for _ in range(a.MAX_ATTEMPTS):
+            code, out, err, _ = self.batch("--room", "2", render=shifted)
+        self.assertEqual(code, 1)
+        self.assertNotIn("next batch renders it through the fallback", out)
+        self.assertIn("STUCK   room_002", err)
+
     def test_a_failed_attempt_keeps_the_review_corrections(self):
         # Regression: a review rejected attempt 1, attempt 2 timed out, and attempt 3
         # rendered without the corrections and was promoted.

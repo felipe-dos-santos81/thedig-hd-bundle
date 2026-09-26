@@ -562,6 +562,26 @@ def fallback_for(dst, item, workflow):
     return None if workflow.fallback in used else comfy_client.WORKFLOWS[workflow.fallback]
 
 
+def room_workflow_for(args, room, workflow):
+    """(the workflow the room renders through, why it differs from `workflow` or "").
+
+    A room with several renders (windows, or a wraparound's seam) goes through
+    `workflow`'s multi_window workflow when it names one: every window gets the
+    whole caption, and at full denoise a mostly empty window paints the caption's
+    objects into itself. A room that cannot be planned keeps `workflow`; its
+    render reports why.
+    """
+    if workflow.multi_window is None:
+        return workflow, ""
+    try:
+        plan = room_geometry.plan_room(source_tree.open_rgba(args.src, room))
+    except ValueError:
+        return workflow, ""
+    if len(plan.windows) > 1 or plan.wrap:
+        return comfy_client.WORKFLOWS[workflow.multi_window], "multi-window"
+    return workflow, ""
+
+
 def stuck_line(room):
     return (f"  STUCK   {room.key}: rejected {MAX_ATTEMPTS} times - fix its caption in "
             f"rooms.yaml, then: make batch room={room.number} force=1")
@@ -573,6 +593,7 @@ def cmd_batch(args):
     entries = load_entries(args)
     reviews = load_reviews(args.reviews, optional=True)
     copies, work, stuck, uncaptioned = [], [], [], []
+    reasons = {}            # room key -> "fallback" or "multi-window", when not `workflow`
     done = 0
     for room in rooms:
         entry = entries[room.key]
@@ -586,12 +607,14 @@ def cmd_batch(args):
         if not args.force and status == "done":
             done += 1
             continue
-        room_workflow = workflow
+        room_workflow, why = room_workflow_for(args, room, workflow)
         if not args.force and status == "stuck":
-            room_workflow = fallback_for(args.dst, room, workflow)
+            room_workflow, why = fallback_for(args.dst, room, room_workflow), "fallback"
             if room_workflow is None:
                 stuck.append(room)
                 continue
+        if why:
+            reasons[room.key] = why
         todo = (room, entry, corrections_for(args.dst, room, reviews), room_workflow)
         if entry.caption.strip():
             work.append(todo)
@@ -606,7 +629,8 @@ def cmd_batch(args):
             w, h = room.out_size
             print(f"  copy    {room.key} skip   -> {w}x{h} nearest")
         for room, entry, corrections, room_workflow in work + uncaptioned:
-            note = f"  (fallback: {room_workflow.name})" if room_workflow is not workflow else ""
+            why = reasons.get(room.key)
+            note = f"  ({why}: {room_workflow.name})" if why else ""
             try:
                 print(plan_line(args, room, entry, corrections) + note)
             except ValueError as error:
@@ -636,8 +660,10 @@ def cmd_batch(args):
         promoted = rejected = failed = 0
         for i, (room, entry, corrections, room_workflow) in enumerate(work, 1):
             note = f" with {len(corrections)} correction(s)" if corrections else ""
-            if room_workflow is not workflow:
+            if reasons.get(room.key) == "fallback":
                 note += f" through the fallback {room_workflow.name}"
+            elif reasons.get(room.key) == "multi-window":
+                note += f" through {room_workflow.name} (several windows)"
             print(f"[{i}/{len(work)}] render {room.key} ({entry.kind}){note}", flush=True)
             try:
                 attempt, result = render_room(args, room_workflow, room, entry, corrections)
@@ -659,7 +685,7 @@ def cmd_batch(args):
             save_reviews(args.reviews, reviews)
             print(f"  rejected attempt {attempt}: " + "; ".join(result.issues), flush=True)
             if room_status(args.dst, room, reviews)[0] == "stuck":
-                fallback = fallback_for(args.dst, room, workflow)
+                fallback = fallback_for(args.dst, room, room_workflow)
                 if fallback is None:
                     stuck.append(room)
                 else:

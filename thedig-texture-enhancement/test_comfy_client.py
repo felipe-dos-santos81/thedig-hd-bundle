@@ -79,6 +79,15 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(comfy_client.load_template(faithful), expected)
         self.assertIsNone(faithful.fallback, msg="a fallback has no fallback of its own")
 
+    def test_multi_window_rooms_render_through_the_faithful_graph(self):
+        # The 2026-09-26 spike: at denoise 1.0 every window of rooms 2 and 27 painted
+        # the whole caption's objects; at 0.9 both kept their layout.
+        full = comfy_client.WORKFLOWS["qwen-image-2.1-i2i"]
+        self.assertEqual(full.multi_window, "qwen-image-2.1-i2i-faithful")
+        for name in ("qwen-image-2.1-i2i-faithful", "qwen-edit-2511-canny"):
+            with self.subTest(name):
+                self.assertIsNone(comfy_client.WORKFLOWS[name].multi_window)
+
     def test_2511_controlnet_reads_canny_of_the_guide(self):
         wf = comfy_client.WORKFLOWS["qwen-edit-2511-canny"]
         prompt = comfy_client.load_template(wf)

@@ -7,7 +7,10 @@ exactly 4x their native size, with local models:
 - ComfyUI running one of two render workflows, chosen per run: Qwen-Image 2.1
   img2img (`qwen-image-2.1-i2i`, the default, with `qwen-image-2.1-i2i-faithful`
   as its fallback for stuck rooms and objects), or Qwen-Image-Edit 2511 with
-  the InstantX Canny ControlNet (`qwen-edit-2511-canny`).
+  the InstantX Canny ControlNet (`qwen-edit-2511-canny`). With the default
+  workflow, a room with several windows (or a wraparound seam) always renders
+  through `qwen-image-2.1-i2i-faithful`: at denoise 1.0 every window painted the
+  whole caption's objects into itself (the room spike).
 - vLLM serving `Qwen/Qwen3.8-27B`, which captions each room before rendering
   and reviews each promoted room and object afterwards.
 
@@ -200,7 +203,9 @@ record) was rejected and it has had 4 judged attempts. With the default
 workflow, the next batch renders it once more through
 `qwen-image-2.1-i2i-faithful` (denoise 0.9: a cleaner upscale that keeps
 closer to the source). If that is rejected too, the run reports it and
-leaves it alone.
+leaves it alone. A multi-window room already renders through
+`qwen-image-2.1-i2i-faithful`, so it has no fallback: after 4 rejections it is
+reported STUCK.
 
 - Fix a stuck room's caption, then run `make batch room=N force=1`.
 - Fix a stuck object's room caption, or add the object to `skip_objects`,
