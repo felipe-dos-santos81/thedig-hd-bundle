@@ -329,12 +329,22 @@ their one definition of it:
 
 Live checks, spikes and runs are in `NOTES.md`.
 
-The kit's defaults inherited unchanged from the Atlantis kit
-(`DEDITHER_METHOD`, `WINDOW_OVERLAP`, `RENDER_EDGE_THRESHOLD`,
-`MIN_EDGE_AGREEMENT`, `DEFAULT_MATCH_STRENGTH`, the default workflow and its
-fallback) are that kit's measured choices (its `AGENTS.md` §6), not Dig
-facts — pending the Dig kit's own spike (design spec §14: rooms 11, 60, 43,
-2, 4 and 27, plus one multi-state object), which decides `WINDOW_HEIGHT`,
-whether `RENDERED_RULES` holds the gate on rooms 2 and 4, and whether
-multi-state objects need chained states. Do not treat any Atlantis-measured
-number as true of the Dig corpus until this kit's own `NOTES.md` says so.
+The room spike and the object spike (2026-09-26, `NOTES.md`) settled the
+Dig-specific choices:
+
+- Multi-window rooms render through `qwen-image-2.1-i2i-faithful` (the
+  registry's `multi_window`): at denoise 1.0 every window painted the whole
+  caption's objects into itself. One-window rooms and objects stay at 1.0.
+- Object prompts carry only the room-wide caption sections
+  (`room_wide_caption`), for the same caption leak.
+- `DEDITHER_METHOD` stays `palette-smooth`; `WINDOW_HEIGHT` stays 240;
+  `RENDERED_RULES` stay.
+- Multi-state objects render state by state with no chaining: the slight
+  frame-to-frame shimmer was judged acceptable.
+- Captions need a read against the room image before every batch, and a
+  hand-set `style` where MEDIUM hedges ("3D or painting").
+
+The other defaults (`WINDOW_OVERLAP`, `RENDER_EDGE_THRESHOLD`,
+`MIN_EDGE_AGREEMENT`, `DEFAULT_MATCH_STRENGTH`) are still the Atlantis kit's
+measured choices (its `AGENTS.md` §6); nothing in the Dig spikes contradicted
+them. `NOTES.md` is the record of what was measured here.
