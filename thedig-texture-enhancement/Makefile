@@ -7,19 +7,22 @@ PY = $(VENV_DIR)/bin/python
 
 # Arguments, e.g. make batch room="1 58" workflow=qwen-image-2.1-i2i force=1
 room ?=
+object ?=
 src ?=
 dst ?=
+obj_dst ?=
 force ?=
 memcheck ?= 1
 strength ?=
 workflow ?=
 dedither ?=
 FORCE_ARG = $(if $(force),--force)
-ARGS = $(foreach r,$(room),--room $(r)) $(if $(src),--src "$(src)") $(if $(dst),--dst "$(dst)")
+ARGS = $(foreach r,$(room),--room $(r)) $(foreach o,$(object),--object $(o)) \
+       $(if $(src),--src "$(src)") $(if $(dst),--dst "$(dst)") $(if $(obj_dst),--obj-dst "$(obj_dst)")
 BATCH_ARGS = $(if $(filter 0,$(memcheck)),--no-memory-check) $(if $(strength),--match-strength $(strength)) \
              $(if $(workflow),--workflow $(workflow)) $(if $(dedither),--dedither $(dedither)) $(FORCE_ARG)
 
-.PHONY: help install server caption dry-run batch review verify check test clean
+.PHONY: help install server caption dry-run batch objects objects-dry-run review verify check test clean
 
 help: ## Print this help message
 	@printf '\033[01;32m${SERVICE}\033[00;37m\n\n'
@@ -50,6 +53,12 @@ dry-run: install ## [STEP 2a] Preview batch's plan, without touching ComfyUI (ro
 
 batch: install ## [STEP 2] Render via ComfyUI into data/rooms-ai; stop vLLM first (room=, workflow=, strength=, dedither=, memcheck=0, force=1)
 	./run_batch.sh batch $(ARGS) $(BATCH_ARGS)
+
+objects-dry-run: install ## [STEP 2c] Preview what objects would do (room=, object=, workflow=, force=1)
+	./run_batch.sh objects --dry-run $(ARGS) $(BATCH_ARGS)
+
+objects: install ## [STEP 2b] Render room objects over their promoted rooms; stop vLLM first (room=, object=, workflow=, strength=, dedither=, memcheck=0, force=1)
+	./run_batch.sh objects $(ARGS) $(BATCH_ARGS)
 
 review: install ## [STEP 3] Review promoted rooms with vLLM into reviews.yaml (room=, force=1)
 	./run_batch.sh review $(ARGS) $(FORCE_ARG)

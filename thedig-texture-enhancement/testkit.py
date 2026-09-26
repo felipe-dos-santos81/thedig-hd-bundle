@@ -202,15 +202,20 @@ def rewrite_manifest(src, change):
     path.write_text(json.dumps(doc, indent=1))
 
 
-def write_rooms(path, kinds=None, caption="SCENE: a test room.\nTEXT: none", rooms=DEFAULT_ROOMS):
+def write_rooms(path, kinds=None, caption="SCENE: a test room.\nTEXT: none", rooms=DEFAULT_ROOMS,
+                skip_objects=None):
     """Write a rooms.yaml covering `rooms`: kind scene with `caption`, unless
     `kinds` maps a room number to another kind. Room 4 is skip by default;
-    skip rooms get no caption."""
+    skip rooms get no caption. `skip_objects` maps a room number to a list of
+    object keys written as a nearest-neighbour 4x rather than rendered."""
     kinds = {4: "skip", **(kinds or {})}
+    skip_objects = skip_objects or {}
     entries = {}
     for spec in rooms:
         kind = kinds.get(spec["room"], "scene")
-        entries[f"room_{spec['room']:03d}"] = RoomEntry(kind, "" if kind == "skip" else caption)
+        entries[f"room_{spec['room']:03d}"] = RoomEntry(
+            kind, "" if kind == "skip" else caption, "",
+            tuple(skip_objects.get(spec["room"], ())))
     save_rooms(path, entries)
 
 

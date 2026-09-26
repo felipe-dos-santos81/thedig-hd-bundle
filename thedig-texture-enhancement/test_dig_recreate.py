@@ -30,6 +30,7 @@ class DriverFixture(unittest.TestCase):
         self.src = testkit.make_source(self.root)
         self.source = source_tree.load(self.src)
         self.dst = self.root / "dst"
+        self.obj_dst = self.root / "objects"
         self.rooms_file = self.root / "rooms.yaml"
         self.reviews = self.root / "reviews.yaml"
         self.comfy_dir = self.root / "comfy"
@@ -40,6 +41,7 @@ class DriverFixture(unittest.TestCase):
 
     def run_cli(self, command, *extra):
         return testkit.run_cli([command, "--src", str(self.src), "--dst", str(self.dst),
+                                "--obj-dst", str(self.obj_dst),
                                 "--rooms-file", str(self.rooms_file),
                                 "--reviews", str(self.reviews), *extra])
 
@@ -308,7 +310,7 @@ class RenderRoomTests(DriverFixture):
             self.assertIn(line + "\n", text)
         self.assertRegex(text, r"seconds: \d+\.\d\n")
         self.assertFalse((audit / "attempt-1.json").exists())
-        self.assertEqual(a.room_status(args, room, {}), ("failed", 1))
+        self.assertEqual(a.room_status(self.dst, room, {}), ("failed", 1))
 
     def test_attempts_continue_with_the_next_seed_and_carry_corrections(self):
         self.render(1)
@@ -597,6 +599,102 @@ class BatchTests(DriverFixture):
                 code, _, err, _ = self.batch("--dry-run")
                 self.assertEqual(code, 2)
                 self.assertIn(message, err)
+
+
+class ObjectTests(DriverFixture):
+    def setUp(self):
+        super().setUp()
+        self.batch_rooms()
+
+    def batch_rooms(self, *extra, transform=None):
+        with testkit.comfy_stub(comfy_dir=self.comfy_dir, render=testkit.fake_render(transform)):
+            code, _, err = self.run_cli("batch", "--room", "1", "--room", "2", "--room", "4", *extra)
+        self.assertEqual(code, 0, err)
+
+    def objects(self, *extra, transform=None, render=None):
+        with testkit.comfy_stub(comfy_dir=self.comfy_dir,
+                                render=render or testkit.fake_render(transform)) as stub:
+            code, out, err = self.run_cli("objects", *extra)
+        return code, out, err, stub
+
+    def object_record(self, key, attempt=1):
+        return json.loads((self.obj_dst / ".quality" / key / f"attempt-{attempt}.json").read_text())
+
+    def test_classifies_renders_copies_and_reports_a_bad_placement(self):
+        code, out, err, stub = self.objects()
+        self.assertEqual(code, 0, err)
+        self.assertIn("render 3, identical 1, copy 1, waiting 0, done 0, stuck 0, badplace 1", out)
+        self.assertIn("BADPLACE obj013_01", err)
+        names = sorted(c.kwargs["name"] for c in stub.render.call_args_list)
+        self.assertEqual(names, ["obj010_02_a1-object", "obj011_01_a1-object",
+                                 "obj014_01_a1-object"])
+        self.assertEqual({c.kwargs["reference"] for c in stub.render.call_args_list}, {"composite"})
+        room_sha = source_tree.file_sha256(self.dst / "room_001.png")
+        with Image.open(self.obj_dst / "obj010_01.png") as im, \
+                Image.open(self.dst / "room_001.png") as room:
+            self.assertEqual((im.size, im.mode), ((192, 128), "RGB"))
+            self.assertEqual(im.tobytes(), room.crop((160, 96, 352, 224)).tobytes())
+        self.assertEqual((self.object_record("obj010_01")["class"],
+                          self.object_record("obj010_01")["room_sha256"]), ("identical", room_sha))
+        record = self.object_record("obj010_02")
+        self.assertEqual((record["class"], record["promoted"], record["context"]),
+                         ("render", True, [0, 0, 128, 128]))
+        sprite = self.obj_dst / "obj011_01.png"
+        self.assertTrue(a.alpha_matches(sprite, source_tree.open_rgba(
+            self.src, next(o for o in self.source.objects if o.key == "obj011_01"))))
+        with Image.open(self.obj_dst / "obj012_01.png") as im:        # skip room: nearest copy
+            self.assertEqual(im.size, (32, 32))
+        self.assertFalse((self.obj_dst / "obj013_01.png").exists())
+        code, out, _, stub = self.objects()
+        self.assertEqual((code, stub.render.call_count), (0, 0))
+        self.assertIn("done 5", out)
+
+    def test_objects_wait_for_their_room_and_follow_its_changes(self):
+        self.objects()
+        (self.dst / "room_002.png").unlink()
+        code, out, _, stub = self.objects("--room", "2")
+        self.assertIn("waiting 1", out)
+        self.assertEqual(stub.render.call_count, 0)
+        self.batch_rooms("--force", transform=lambda im: Image.eval(im, lambda v: min(255, v + 3)))
+        code, out, err, stub = self.objects("--room", "1")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(stub.render.call_count, 2)                    # obj010_02, obj011_01 stale
+        self.assertEqual(self.object_record("obj010_01", 2)["room_sha256"],
+                         source_tree.file_sha256(self.dst / "room_001.png"))
+
+    def test_a_geometry_rejection_is_retried_with_the_layout_correction(self):
+        code, out, _, _ = self.objects("--object", "obj010_02", transform=testkit.shift_right)
+        self.assertEqual(code, 0)
+        self.assertEqual(load_reviews(self.reviews)["obj010_02"].source, "geometry")
+        _, _, _, stub = self.objects("--object", "obj010_02")
+        self.assertIn(GEOMETRY_CORRECTION, stub.render.call_args.kwargs["positive"])
+        self.assertTrue(self.object_record("obj010_02", 2)["promoted"])
+
+    def test_skip_objects_are_copied_not_rendered(self):
+        testkit.write_rooms(self.rooms_file, skip_objects={1: ["obj010_02"]})
+        _, out, _, stub = self.objects("--object", "obj010_02")
+        self.assertEqual(stub.render.call_count, 0)
+        with Image.open(self.obj_dst / "obj010_02.png") as im:
+            self.assertEqual(im.size, (192, 128))
+
+    def test_a_failed_object_does_not_stop_the_others(self):
+        def render(workflow, **kw):
+            if kw["name"].startswith("obj010_02"):
+                raise RuntimeError("ComfyUI execution failed")
+            return testkit.fake_render()(workflow, **kw)
+        code, out, err, stub = self.objects(render=render)
+        self.assertEqual(code, 1)
+        self.assertIn("ERROR rendering obj010_02", err)
+        self.assertTrue((self.obj_dst / "obj011_01.png").is_file())
+        self.assertTrue((self.obj_dst / ".quality" / "obj010_02" / "attempt-1.error.txt").is_file())
+        stub.sweep.assert_any_call("obj010_02", self.comfy_dir)
+
+    def test_dry_run_lists_without_rendering(self):
+        code, out, _, stub = self.objects("--dry-run")
+        self.assertEqual((code, stub.render.call_count, stub.is_up.call_count), (0, 0, 0))
+        self.assertIn("render    obj010_02 in room_001 -> 192x128", out)
+        self.assertIn("identical obj010_01 in room_001", out)
+        self.assertFalse(self.obj_dst.exists())
 
 
 class ReviewTests(DriverFixture):

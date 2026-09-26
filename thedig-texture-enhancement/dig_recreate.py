@@ -10,6 +10,9 @@ Human-paced stages, each a subcommand:
             stitch, colour-match, fix up and check its geometry; promote it into
             the output tree when the geometry holds; re-render the rooms
             reviews.yaml rejects; write skip rooms as a nearest-neighbour 4x
+  objects   repaint every room object over its promoted room, in its context
+            window; promote it when its geometry holds; re-render the objects
+            reviews.yaml rejects; write skip objects as a nearest-neighbour 4x
   review    compare every promoted room with its source through the vLLM and
             write reviews.yaml
   verify    audit the output tree against the manifest, the 4x rule and the
@@ -35,10 +38,11 @@ from PIL import Image
 import colour_match
 import comfy_client
 import geometry_check
+import object_geometry
 import room_geometry
 import source_tree
-from prompts import (GEOMETRY_CORRECTION, SEAM_NOTE, caption_room, medium_style, negative_prompt,
-                     render_prompt, review_room, vlm_is_serving, window_note)
+from prompts import (GEOMETRY_CORRECTION, OBJECT_NOTE, SEAM_NOTE, caption_room, medium_style,
+                     negative_prompt, render_prompt, review_room, vlm_is_serving, window_note)
 from rooms_file import (Review, RoomsFileError, check_coverage, load_reviews, load_rooms,
                         save_reviews, save_rooms)
 from source_tree import SourceError
@@ -52,6 +56,7 @@ def _env_path(name, default):
 
 SRC_ROOT = _env_path("DIG_SRC", REPO.parent / "thedig-textures-exporter" / "out")
 DST_ROOT = _env_path("DIG_DST", REPO / "data" / "rooms-ai")
+OBJ_DST_ROOT = _env_path("DIG_OBJ_DST", REPO / "data" / "objects-ai")
 ROOMS_FILE = _env_path("DIG_ROOMS", REPO / "rooms.yaml")
 REVIEWS_FILE = _env_path("DIG_REVIEWS", REPO / "reviews.yaml")
 COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
@@ -415,8 +420,8 @@ def comfy_preflight(workflow, no_memory_check):
     return None
 
 
-def room_status(args, room, reviews):
-    """(status, latest attempt) of a scene or insert room:
+def room_status(dst, item, reviews):
+    """(status, latest attempt) of a scene or insert room, or a room object:
     new       never attempted
     stuck     its latest judged attempt was rejected, and it has MAX_ATTEMPTS or
               more judged attempts
@@ -429,11 +434,11 @@ def room_status(args, room, reviews):
     has none and never counts toward STUCK: a room failing on infrastructure is
     retried on every batch. A stale review (see current_review) is ignored.
     """
-    audit = audit_dir(args.dst, room)
+    audit = audit_dir(dst, item)
     attempt = latest_attempt(audit)
     if attempt == 0:
         return "new", 0
-    review = current_review(reviews, room, attempt)
+    review = current_review(reviews, item, attempt)
     records = {n: r for n in range(1, attempt + 1) if (r := read_record(audit, n)) is not None}
 
     def rejected(n):
@@ -446,20 +451,20 @@ def room_status(args, room, reviews):
         return "failed", attempt
     if rejected(attempt):
         return "rejected", attempt
-    if not (args.dst / room.out_name).is_file():
+    if not (dst / item.out_name).is_file():
         return "missing", attempt
     return "done", attempt
 
 
-def corrections_for(args, room, reviews):
-    """What the room's next attempt must correct: the issues of its current
-    review when that review rejected an attempt and no later attempt was
-    promoted, whatever became of the attempts since (rejected or failed).
+def corrections_for(dst, item, reviews):
+    """What the room or object's next attempt must correct: the issues of its
+    current review when that review rejected an attempt and no later attempt
+    was promoted, whatever became of the attempts since (rejected or failed).
     After a geometry rejection it is the one GEOMETRY_CORRECTION sentence:
     the gate's own strings mean nothing to the diffusion model."""
-    audit = audit_dir(args.dst, room)
+    audit = audit_dir(dst, item)
     latest = latest_attempt(audit)
-    review = current_review(reviews, room, latest)
+    review = current_review(reviews, item, latest)
     if review is None or review.accepted:
         return []
     if any((read_record(audit, n) or {}).get("promoted")
@@ -506,12 +511,12 @@ def plan_line(args, room, entry, corrections):
     return line + ("  " + "; ".join(extras) if extras else "")
 
 
-def fallback_for(args, room, workflow):
-    """The workflow to render a stuck room through once more: `workflow`'s
-    fallback while no judged attempt of the room has used it; else None."""
+def fallback_for(dst, item, workflow):
+    """The workflow to render a stuck room or object through once more:
+    `workflow`'s fallback while no judged attempt of it has used it; else None."""
     if workflow.fallback is None:
         return None
-    audit = audit_dir(args.dst, room)
+    audit = audit_dir(dst, item)
     used = {record.get("workflow") for n in range(1, latest_attempt(audit) + 1)
             if (record := read_record(audit, n)) is not None}
     return None if workflow.fallback in used else comfy_client.WORKFLOWS[workflow.fallback]
@@ -537,17 +542,17 @@ def cmd_batch(args):
             else:
                 done += 1
             continue
-        status, _ = room_status(args, room, reviews)
+        status, _ = room_status(args.dst, room, reviews)
         if not args.force and status == "done":
             done += 1
             continue
         room_workflow = workflow
         if not args.force and status == "stuck":
-            room_workflow = fallback_for(args, room, workflow)
+            room_workflow = fallback_for(args.dst, room, workflow)
             if room_workflow is None:
                 stuck.append(room)
                 continue
-        todo = (room, entry, corrections_for(args, room, reviews), room_workflow)
+        todo = (room, entry, corrections_for(args.dst, room, reviews), room_workflow)
         if entry.caption.strip():
             work.append(todo)
         else:
@@ -613,8 +618,8 @@ def cmd_batch(args):
             reviews[room.key] = Review(attempt, False, result.issues, "geometry")
             save_reviews(args.reviews, reviews)
             print(f"  rejected attempt {attempt}: " + "; ".join(result.issues), flush=True)
-            if room_status(args, room, reviews)[0] == "stuck":
-                fallback = fallback_for(args, room, workflow)
+            if room_status(args.dst, room, reviews)[0] == "stuck":
+                fallback = fallback_for(args.dst, room, workflow)
                 if fallback is None:
                     stuck.append(room)
                 else:
@@ -627,6 +632,232 @@ def cmd_batch(args):
         return 1 if failed or stuck else 0
     finally:
         free_comfy_models()
+
+
+# ---- objects ----------------------------------------------------------------
+
+def object_selection(args):
+    """--object keys when given, else the objects of the selected rooms."""
+    if args.object:
+        return source_tree.select_objects(args.source, args.object)
+    return source_tree.objects_of(args.source, [room.number for room in selection(args)])
+
+
+def object_status(args, obj, reviews, room_sha):
+    """room_status of the object, plus stale: done, but painted over a room
+    output other than the current one (room_sha)."""
+    status, attempt = room_status(args.obj_dst, obj, reviews)
+    if status == "done":
+        record = promoted_record(audit_dir(args.obj_dst, obj),
+                                 source_tree.file_sha256(args.obj_dst / obj.out_name))
+        if record is None or record.get("room_sha256") != room_sha:
+            return "stale", attempt
+    return status, attempt
+
+
+def write_nearest_object(args, obj):
+    """A skipped object's output: its source enlarged 4x, nearest neighbour."""
+    save_image_atomic(source_tree.open_rgba(args.src, obj).convert(obj.mode)
+                      .resize(obj.out_size, Image.Resampling.NEAREST), args.obj_dst / obj.out_name)
+
+
+def render_object(args, workflow, obj, room, entry, corrections, cls):
+    """Write one object image over its promoted room: an identical object is
+    the room's crop; a render object is repainted in its context window,
+    composed through its mask and checked. Promote it when the check holds.
+
+    Returns (attempt, GeometryResult). A render that raises writes
+    attempt-N.error.txt and no record, as render_room does.
+    """
+    audit = audit_dir(args.obj_dst, obj)
+    audit.mkdir(parents=True, exist_ok=True)
+    attempt = latest_attempt(audit) + 1
+    tiles = audit / f"attempt-{attempt}.tiles"
+    tiles.mkdir()
+    seed = SEED + attempt - 1
+    started = time.monotonic()
+    stage = None
+    try:
+        room_image = source_tree.open_rgba(args.src, room)
+        obj_image = source_tree.open_rgba(args.src, obj)
+        room_path = args.dst / room.out_name
+        record = {"attempt": attempt, "class": cls, "room": room.key,
+                  "room_sha256": source_tree.file_sha256(room_path)}
+        with Image.open(room_path) as im:
+            room_hd = im.convert("RGB")
+        if cls == "identical":
+            out = object_geometry.identical_output(room_hd, obj.x, obj.y, obj.width, obj.height)
+            result = geometry_check.GeometryResult((0.0, 0.0), (), 1.0, (), (), ())
+        else:
+            inputs = object_geometry.object_inputs(room_hd, room_image, obj_image, obj.x, obj.y,
+                                                   args.dedither)
+            style = entry.style or "painted"
+            positive = render_prompt(entry.caption, entry.kind, corrections, OBJECT_NOTE,
+                                     workflow.reference, style)
+            negative = negative_prompt(style)
+            paths = {}
+            for part, image in (("guide", inputs.guide), ("composite", inputs.composite),
+                                ("mask", inputs.mask)):
+                paths[part] = tiles / f"object.{part}.png"
+                image.save(paths[part])
+            stage = "object"
+            saved = comfy_client.render_window(
+                workflow, guide=paths["guide"], composite=paths["composite"], mask=paths["mask"],
+                reference="composite", positive=positive, negative=negative, seed=seed,
+                name=f"{obj.key}_a{attempt}-object", url=COMFY_URL, comfy_dir=COMFY_DIR)
+            raw = tiles / "object.png"
+            shutil.move(saved, raw)
+            with Image.open(raw) as im:
+                rendered = im.convert("RGB")
+            if rendered.size != inputs.composite.size:
+                raise RuntimeError(f"object came back {rendered.width}x{rendered.height}, "
+                                   f"expected {inputs.composite.width}x{inputs.composite.height}")
+            stage = None
+            write_atomic(audit / f"attempt-{attempt}.prompt.txt",
+                         f"workflow: {workflow.name}\n\n--- object ---\n{positive}\n\n"
+                         f"--- negative ---\n{negative}\n")
+            final = object_geometry.compose(rendered, inputs, args.match_strength)
+            final.save(audit / f"attempt-{attempt}.png")
+            result = object_geometry.check_object(final, inputs)
+            out = object_geometry.object_crop(final, inputs, obj.x, obj.y, obj.width, obj.height)
+            record.update({"workflow": workflow.name, "seed": seed, "reference": "composite",
+                           "dedither": args.dedither, "context": list(inputs.box),
+                           "match": {"rule": colour_match.RULE,
+                                     "strength": args.match_strength}})
+        if obj.has_alpha:
+            out = room_geometry.with_alpha(out, obj_image)
+        sha = None
+        if result.passed:
+            dst = args.obj_dst / obj.out_name
+            save_image_atomic(out, dst)
+            sha = source_tree.file_sha256(dst)
+        record.update({"geometry": result.as_dict(), "promoted": result.passed,
+                       "output_sha256": sha, "seconds": round(time.monotonic() - started, 1)})
+        write_atomic(audit / f"attempt-{attempt}.json", json.dumps(record, indent=2))
+        return attempt, result
+    except BaseException as error:
+        write_atomic(audit / f"attempt-{attempt}.error.txt",
+                     f"workflow: {workflow.name}\nseed: {seed}\nwindow: {stage or 'none'}\n"
+                     f"seconds: {time.monotonic() - started:.1f}\n"
+                     f"error: {type(error).__name__}: {error}\n")
+        raise
+
+
+def object_stuck_line(obj):
+    return (f"  STUCK   {obj.key}: rejected {MAX_ATTEMPTS} times - fix {obj.room_key}'s caption, "
+            f"or add it to skip_objects, then: make objects object={obj.key} force=1")
+
+
+def cmd_objects(args):
+    workflow = comfy_client.WORKFLOWS[args.workflow]
+    objs = object_selection(args)
+    entries = load_entries(args)
+    reviews = load_reviews(args.reviews, optional=True)
+    rooms = {room.number: room for room in args.source.rooms}
+    copies, work, waiting, bad, stuck = [], [], [], [], []
+    done = 0
+    for obj in objs:
+        if obj.placement_error:
+            bad.append(obj)
+            continue
+        room = rooms[obj.room]
+        entry = entries[room.key]
+        if entry.kind == "skip" or obj.key in entry.skip_objects:
+            if args.force or not (args.obj_dst / obj.out_name).is_file():
+                copies.append(obj)
+            else:
+                done += 1
+            continue
+        if room_status(args.dst, room, reviews)[0] != "done":
+            waiting.append(obj)
+            continue
+        room_sha = source_tree.file_sha256(args.dst / room.out_name)
+        status, _ = object_status(args, obj, reviews, room_sha)
+        if not args.force and status == "done":
+            done += 1
+            continue
+        obj_workflow = workflow
+        if not args.force and status == "stuck":
+            obj_workflow = fallback_for(args.obj_dst, obj, workflow)
+            if obj_workflow is None:
+                stuck.append(obj)
+                continue
+        cls = object_geometry.classify(source_tree.open_rgba(args.src, obj),
+                                       source_tree.open_rgba(args.src, room), obj.x, obj.y)
+        work.append((obj, room, entry, cls, corrections_for(args.obj_dst, obj, reviews),
+                     obj_workflow))
+
+    renders = [item for item in work if item[3] == "render"]
+    print(f"workflow: {workflow.name}  match strength: {args.match_strength}")
+    print(f"{len(objs)} object(s): render {len(renders)}, identical {len(work) - len(renders)}, "
+          f"copy {len(copies)}, waiting {len(waiting)}, done {done}, stuck {len(stuck)}, "
+          f"badplace {len(bad)}")
+    for obj in bad:
+        print(f"  BADPLACE {obj.key}: {obj.placement_error}", file=sys.stderr)
+    if args.dry_run:
+        for obj in copies:
+            w, h = obj.out_size
+            print(f"  copy      {obj.key} -> {w}x{h} nearest")
+        for obj, room, _, cls, corrections, obj_workflow in work:
+            w, h = obj.out_size
+            extras = [f"{len(corrections)} correction(s)"] if corrections else []
+            if obj_workflow is not workflow:
+                extras.append(f"fallback: {obj_workflow.name}")
+            print(f"  {cls:9} {obj.key} in {room.key} -> {w}x{h}"
+                  + ("  " + "; ".join(extras) if extras else ""))
+        for obj in waiting:
+            print(f"  waiting   {obj.key}: {obj.room_key} is not done")
+        for obj in stuck:
+            print(object_stuck_line(obj))
+        return 0
+    args.obj_dst.mkdir(parents=True, exist_ok=True)
+    for obj in copies:
+        write_nearest_object(args, obj)
+        print(f"  copy      {obj.key} (nearest 4x)")
+    if not work:
+        for obj in stuck:
+            print(object_stuck_line(obj), file=sys.stderr)
+        return 1 if stuck else 0
+    for needed in dict.fromkeys(item[5] for item in renders):
+        code = comfy_preflight(needed, args.no_memory_check)
+        if code is not None:
+            return code
+    try:
+        promoted = rejected = failed = 0
+        for i, (obj, room, entry, cls, corrections, obj_workflow) in enumerate(work, 1):
+            note = f" with {len(corrections)} correction(s)" if corrections else ""
+            print(f"[{i}/{len(work)}] {cls} {obj.key} ({room.key}){note}", flush=True)
+            try:
+                attempt, result = render_object(args, obj_workflow, obj, room, entry,
+                                                corrections, cls)
+            except KeyboardInterrupt:
+                comfy_client.sweep_outputs(obj.key, COMFY_DIR)
+                raise
+            except Exception as error:
+                failed += 1
+                swept = comfy_client.sweep_outputs(obj.key, COMFY_DIR)
+                extra = f" (removed {swept} stray output file(s))" if swept else ""
+                print(f"  ERROR rendering {obj.key}: {error}{extra}", file=sys.stderr, flush=True)
+                continue
+            if result.passed:
+                promoted += 1
+                print(f"  promoted attempt {attempt}", flush=True)
+                continue
+            rejected += 1
+            reviews[obj.key] = Review(attempt, False, result.issues, "geometry")
+            save_reviews(args.reviews, reviews)
+            print(f"  rejected attempt {attempt}: " + "; ".join(result.issues), flush=True)
+            if room_status(args.obj_dst, obj, reviews)[0] == "stuck":
+                if fallback_for(args.obj_dst, obj, workflow) is None:
+                    stuck.append(obj)
+        for obj in stuck:
+            print(object_stuck_line(obj), file=sys.stderr)
+        print(f"done: promoted={promoted} rejected={rejected} failed={failed} "
+              f"copied={len(copies)} done={done} stuck={len(stuck)} badplace={len(bad)}")
+        return 1 if failed or stuck else 0
+    finally:
+        if renders:
+            free_comfy_models()
 
 
 # ---- review -----------------------------------------------------------------
@@ -758,8 +989,12 @@ def build_parser():
                             "(default: %(default)s, or DIG_SRC)")
         p.add_argument("--dst", type=Path, default=DST_ROOT,
                        help="output tree (default: %(default)s, or DIG_DST)")
+        p.add_argument("--obj-dst", type=Path, default=OBJ_DST_ROOT,
+                       help="object output tree (default: %(default)s, or DIG_OBJ_DST)")
         p.add_argument("--room", type=int, action="append", metavar="N",
                        help="process room N only (repeatable)")
+        p.add_argument("--object", action="append", metavar="KEY",
+                       help="process object KEY (objNNN_SS) only (repeatable)")
         p.add_argument("--rooms-file", type=Path, default=ROOMS_FILE,
                        help="rooms file (default: %(default)s, or DIG_ROOMS)")
         p.add_argument("--reviews", type=Path, default=REVIEWS_FILE,
@@ -775,6 +1010,11 @@ def build_parser():
     common(batch)
     render_options(batch)
     batch.set_defaults(func=cmd_batch)
+
+    objects = sub.add_parser("objects", help="render room objects over their promoted rooms")
+    common(objects)
+    render_options(objects)
+    objects.set_defaults(func=cmd_objects)
 
     review = sub.add_parser("review", help="compare promoted rooms with their sources through "
                                            "the local vLLM")

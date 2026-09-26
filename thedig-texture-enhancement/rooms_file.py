@@ -26,6 +26,7 @@ STYLES = ("painted", "rendered")
 REVIEW_SOURCES = ("review", "geometry")
 _KEY = re.compile(r"^room_\d{3}$")
 _OBJECT_KEY = re.compile(r"^obj\d{3,}_[0-9A-F]{2}$")
+_REVIEW_KEY = re.compile(r"^(room_\d{3}|obj\d{3,}_[0-9A-F]{2})$")
 
 
 class RoomsFileError(ValueError):
@@ -78,8 +79,9 @@ def _dump(mapping, path):
     os.replace(tmp, path)
 
 
-def _read_mapping(path, optional):
-    """The file's top-level mapping of room keys; {} for a missing file when optional."""
+def _read_mapping(path, optional, key=_KEY, label="a room key (room_NNN)"):
+    """The file's top-level mapping of `key`-matching keys; {} for a missing
+    file when optional."""
     path = Path(path)
     if not path.exists():
         if optional:
@@ -93,9 +95,9 @@ def _read_mapping(path, optional):
         data = {}
     if not isinstance(data, dict):
         raise RoomsFileError(f"{path}: expected a mapping of room_NNN entries")
-    for key in data:
-        if not isinstance(key, str) or not _KEY.match(key):
-            raise RoomsFileError(f"{path}: {key!r} is not a room key (room_NNN)")
+    for k in data:
+        if not isinstance(k, str) or not key.match(k):
+            raise RoomsFileError(f"{path}: {k!r} is not {label}")
     return data
 
 
@@ -158,9 +160,11 @@ def check_coverage(rooms, keys, path="rooms.yaml"):
 
 
 def load_reviews(path, optional=False):
-    """{room_NNN: Review}. A missing file is {} when optional, else an error."""
+    """{room_NNN or objNNN_SS: Review}. A missing file is {} when optional,
+    else an error."""
     result = {}
-    for key, entry in _read_mapping(path, optional).items():
+    for key, entry in _read_mapping(path, optional, key=_REVIEW_KEY,
+                                    label="a room or object key").items():
         where = f"{Path(path)}: {key}"
         if not isinstance(entry, dict):
             raise RoomsFileError(f"{where}: expected a mapping")

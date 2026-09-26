@@ -55,6 +55,8 @@ LETTERING:
 
 SEAM_NOTE = '''This image straddles the join of a wraparound panorama: its left half is the room's right end and its right half is the room's left end. Paint one continuous scene across the middle, with no seam.'''
 
+OBJECT_NOTE = '''This image is a close crop of a finished high-definition room around one object of the original. Only the object's area is repainted; everything around it is already finished. Recreate the object in the same style, light, colour and detail as its surroundings, keeping its outline, size and position exactly where the reference shows it, with no halo or edge between it and the room.'''
+
 # The one correction after a geometry rejection: the gate's issue strings mean
 # nothing to the diffusion model, and it likes to paint text it is given.
 GEOMETRY_CORRECTION = ("Keep every edge, object, horizon and outline exactly where the reference "

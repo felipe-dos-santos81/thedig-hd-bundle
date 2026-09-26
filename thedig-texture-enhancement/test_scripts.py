@@ -23,6 +23,9 @@ class MakeTests(unittest.TestCase):
             ("batch", "room=11", "dedither=none"): "./run_batch.sh batch --room 11 --dedither none",
             ("review", "force=1"): "./run_batch.sh review --force",
             ("verify", "src=/x"): './run_batch.sh verify --src "/x"',
+            ("objects", "room=1", "object=obj010_02", "force=1"):
+                "./run_batch.sh objects --room 1 --object obj010_02 --force",
+            ("objects-dry-run",): "./run_batch.sh objects --dry-run",
             ("server",): "./run_server.sh",
         }
         for args, expected in cases.items():

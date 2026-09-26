@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 import rooms_file as rf
-from rooms_file import Review, RoomEntry, RoomsFileError
+from rooms_file import Review, RoomEntry, RoomsFileError, load_reviews, load_rooms, save_reviews
 
 
 class RoomsTests(unittest.TestCase):
@@ -93,7 +93,22 @@ class ReviewsTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.path = Path(tmp.name) / "reviews.yaml"
+        self.tmp = Path(tmp.name)
+        self.path = self.tmp / "reviews.yaml"
+
+    def test_reviews_take_room_and_object_keys(self):
+        path = self.tmp / "reviews.yaml"
+        reviews = {"room_001": Review(1, True, ()),
+                   "obj010_02": Review(2, False, ("halo",), "geometry")}
+        save_reviews(path, reviews)
+        self.assertEqual(load_reviews(path), reviews)
+        path.write_text("door:\n  attempt: 1\n  accepted: true\n  issues: []\n")
+        with self.assertRaisesRegex(RoomsFileError, "is not a room or object key"):
+            load_reviews(path)
+        rooms = self.tmp / "rooms.yaml"
+        rooms.write_text("obj010_02:\n  kind: scene\n")
+        with self.assertRaisesRegex(RoomsFileError, "is not a room key"):
+            load_rooms(rooms)
 
     def test_round_trip_and_file_handling(self):
         with self.subTest("missing file"):
